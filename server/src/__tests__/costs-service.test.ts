@@ -939,6 +939,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     const claudeAgentId = randomUUID();
     const codexAgentId = randomUUID();
     const estimatedRunId = randomUUID();
+    const lateCancelledRunId = randomUUID();
     const apiRunId = randomUUID();
     const unrecordedRunId = randomUUID();
     const codexRunId = randomUUID();
@@ -987,6 +988,15 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         resultJson: { usageEstimated: true },
       },
       {
+        id: lateCancelledRunId,
+        companyId,
+        agentId: claudeAgentId,
+        invocationSource: "on_demand",
+        status: "cancelled",
+        startedAt: inWindow,
+        usageJson: { inputTokens: 100, usageEstimated: true },
+      },
+      {
         id: apiRunId,
         companyId,
         agentId: claudeAgentId,
@@ -1021,6 +1031,17 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       inputTokens: 1_000,
       cachedInputTokens: 200,
       outputTokens: 300,
+      costCents: 0,
+      occurredAt: inWindow,
+    });
+    await costs.createEvent(companyId, {
+      ...base,
+      heartbeatRunId: lateCancelledRunId,
+      billingType: "subscription_included",
+      costStatus: "unpriced",
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      outputTokens: 50,
       costCents: 0,
       occurredAt: inWindow,
     });
@@ -1063,20 +1084,20 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
 
     expect(usage.since).toBe("2026-10-08T06:00:00.000Z");
     expect(usage.totals).toEqual({
-      runs: 1,
-      estimatedRuns: 1,
+      runs: 2,
+      estimatedRuns: 2,
       unrecordedRuns: 1,
-      inputTokens: 1_000,
+      inputTokens: 1_100,
       cachedInputTokens: 200,
-      outputTokens: 300,
+      outputTokens: 350,
     });
     expect(usage.agents).toHaveLength(1);
     expect(usage.agents[0]).toMatchObject({
       agentId: claudeAgentId,
       agentName: "Claude Agent",
       models: "claude-sonnet-5-5",
-      runs: 1,
-      estimatedRuns: 1,
+      runs: 2,
+      estimatedRuns: 2,
       unrecordedRuns: 1,
     });
 

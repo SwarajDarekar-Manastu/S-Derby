@@ -59,19 +59,41 @@ export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null
  * before Claude prints its `result` event (cancelled on issue reassignment, or
  * killed) has no `modelUsage`, but every assistant event repeats its message's
  * usage, so the latest usage per message id is an estimate of what the run used.
- * The in-flight message may still be undercounted.
+ * Input counts are final when a message starts, but its `output_tokens` is an
+ * early snapshot, so output is also estimated from the characters the message
+ * wrote (text, thinking, tool input) at about four characters per token, and
+ * the larger figure is kept.
  */
-function sumAssistantMessageUsage(usageByMessage: Map<string, Record<string, unknown>>): UsageSummary | null {
+const CHARS_PER_OUTPUT_TOKEN = 4;
+
+function sumAssistantMessageUsage(
+  usageByMessage: Map<string, Record<string, unknown>>,
+  outputCharsByMessage: Map<string, number>,
+): UsageSummary | null {
   if (usageByMessage.size === 0) return null;
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;
-  for (const usage of usageByMessage.values()) {
+  for (const [messageId, usage] of usageByMessage) {
     inputTokens += asNumber(usage.input_tokens, 0) + asNumber(usage.cache_creation_input_tokens, 0);
-    outputTokens += asNumber(usage.output_tokens, 0);
+    const charEstimate = Math.ceil((outputCharsByMessage.get(messageId) ?? 0) / CHARS_PER_OUTPUT_TOKEN);
+    outputTokens += Math.max(asNumber(usage.output_tokens, 0), charEstimate);
     cachedInputTokens += asNumber(usage.cache_read_input_tokens, 0);
   }
   return { inputTokens, outputTokens, cachedInputTokens };
+}
+
+function outputCharsOf(block: Record<string, unknown>): number {
+  switch (asString(block.type, "")) {
+    case "text":
+      return asString(block.text, "").length;
+    case "thinking":
+      return asString(block.thinking, "").length;
+    case "tool_use":
+      return asString(block.name, "").length + JSON.stringify(block.input ?? {}).length;
+    default:
+      return 0;
+  }
 }
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -80,6 +102,7 @@ export function parseClaudeStreamJson(stdout: string) {
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
   const usageByMessage = new Map<string, Record<string, unknown>>();
+  const outputCharsByMessage = new Map<string, number>();
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -104,6 +127,7 @@ export function parseClaudeStreamJson(stdout: string) {
       for (const entry of content) {
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
         const block = entry as Record<string, unknown>;
+        if (messageId) outputCharsByMessage.set(messageId, (outputCharsByMessage.get(messageId) ?? 0) + outputCharsOf(block));
         if (asString(block.type, "") === "text") {
           const text = asString(block.text, "");
           if (text) assistantTexts.push(text);
@@ -125,7 +149,7 @@ export function parseClaudeStreamJson(stdout: string) {
       costUsd: null as number | null,
       usage: null as UsageSummary | null,
       usageBasis: null as "per_run" | null,
-      partialUsage: sumAssistantMessageUsage(usageByMessage),
+      partialUsage: sumAssistantMessageUsage(usageByMessage, outputCharsByMessage),
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
     };

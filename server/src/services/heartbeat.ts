@@ -19910,9 +19910,10 @@ export function heartbeatService(
     usageJson: Record<string, unknown>,
     usage: UsageTotals,
   ) {
+    const estimated = (result.resultJson as Record<string, unknown> | null | undefined)?.usageEstimated === true;
     const claimed = await db
       .update(heartbeatRuns)
-      .set({ usageJson, updatedAt: new Date() })
+      .set({ usageJson: estimated ? { ...usageJson, usageEstimated: true } : usageJson, updatedAt: new Date() })
       .where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.usageJson)))
       .returning({ id: heartbeatRuns.id });
     if (claimed.length === 0) return;

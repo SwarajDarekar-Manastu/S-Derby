@@ -394,7 +394,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           agentAppearance: agents.appearance,
           models: sql<string>`string_agg(distinct ${costEvents.model}, ', ')`,
           runs: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
-          estimatedRuns: sql<number>`count(distinct case when (${heartbeatRuns.resultJson} ->> 'usageEstimated') = 'true' then ${costEvents.heartbeatRunId} end)::int`,
+          estimatedRuns: sql<number>`count(distinct case when (${heartbeatRuns.resultJson} ->> 'usageEstimated') = 'true' or (${heartbeatRuns.usageJson} ->> 'usageEstimated') = 'true' then ${costEvents.heartbeatRunId} end)::int`,
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),

@@ -580,6 +580,31 @@ describe("parseClaudeStreamJson usage extraction", () => {
     });
   });
 
+  it("estimates output from what a message wrote when its usage is an early snapshot", () => {
+    const parsed = parseClaudeStreamJson(
+      [
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            id: "msg_1",
+            usage: { input_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 500, output_tokens: 1 },
+            content: [{ type: "text", text: "a".repeat(400) }],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            id: "msg_1",
+            usage: { input_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 500, output_tokens: 1 },
+            content: [{ type: "tool_use", name: "Bash", input: { command: "b".repeat(780) } }],
+          },
+        }),
+      ].join("\n"),
+    );
+    // 400 text chars + "Bash" (4) + {"command":"bbb…"} (14 + 780) = 1198 chars → 300 tokens, not the stale 1.
+    expect(parsed.partialUsage).toEqual({ inputTokens: 3, outputTokens: 300, cachedInputTokens: 500 });
+  });
+
   it("reports no estimate when the result event carries the usage", () => {
     expect(parseClaudeStreamJson(`${resultEvent({})}\n`).partialUsage).toBeNull();
   });
