@@ -4483,6 +4483,12 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      // Subscription pacing pauses an agent only until the plan window resets and
+      // then resumes it itself, so its tasks are waiting, not stranded.
+      if (agent?.status === "paused" && agent.pauseReason === "subscription_pacing") {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
         if (
