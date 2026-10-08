@@ -243,7 +243,13 @@ export function SubscriptionPacingCard({ companyId }: { companyId: string }) {
           {status.agents.length === 0 ? (
             <p className="text-sm text-muted-foreground">No agents run on the Claude subscription.</p>
           ) : (
-            status.agents.map((agent) => {
+            [...status.agents]
+              .sort(
+                (a, b) =>
+                  (evaluations.get(b.agentId)?.weeklySharePercent ?? 0) -
+                  (evaluations.get(a.agentId)?.weeklySharePercent ?? 0),
+              )
+              .map((agent) => {
               const evaluation = evaluations.get(agent.agentId);
               const statusText = agentStatusText(agent, evaluation, draft.autoPause);
               const planPercent = evaluation?.weeklyPlanPercent ?? null;
