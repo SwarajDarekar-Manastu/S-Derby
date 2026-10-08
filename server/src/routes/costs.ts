@@ -270,6 +270,19 @@ export function costRoutes(
     res.json(rows);
   });
 
+  router.get("/companies/:companyId/costs/subscription", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const sinceRaw = typeof req.query.since === "string" ? req.query.since : null;
+    const since = sinceRaw ? new Date(sinceRaw) : new Date(Date.now() - 5 * 60 * 60 * 1000);
+    if (Number.isNaN(since.getTime())) {
+      res.status(400).json({ error: "since must be an ISO date" });
+      return;
+    }
+    res.json(await costs.subscriptionUsage(companyId, since));
+  });
+
   router.get("/companies/:companyId/costs/quota-windows", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

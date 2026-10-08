@@ -557,6 +557,33 @@ describe("parseClaudeStreamJson usage extraction", () => {
     expect(parsed.costUsd).toBeCloseTo(1.25);
   });
 
+  it("estimates usage from assistant messages when the run stops before its result event", () => {
+    const assistant = (id: string, usage: Record<string, number>) =>
+      JSON.stringify({
+        type: "assistant",
+        session_id: "sess-1",
+        message: { id, usage, content: [{ type: "text", text: "working" }] },
+      });
+    const parsed = parseClaudeStreamJson(
+      [
+        assistant("msg_1", { input_tokens: 5, cache_creation_input_tokens: 100, cache_read_input_tokens: 1_000, output_tokens: 10 }),
+        assistant("msg_1", { input_tokens: 5, cache_creation_input_tokens: 100, cache_read_input_tokens: 1_000, output_tokens: 40 }),
+        assistant("msg_2", { input_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 1_200, output_tokens: 7 }),
+      ].join("\n"),
+    );
+    expect(parsed.resultJson).toBeNull();
+    expect(parsed.usage).toBeNull();
+    expect(parsed.partialUsage).toEqual({
+      inputTokens: 107,
+      outputTokens: 47,
+      cachedInputTokens: 2_200,
+    });
+  });
+
+  it("reports no estimate when the result event carries the usage", () => {
+    expect(parseClaudeStreamJson(`${resultEvent({})}\n`).partialUsage).toBeNull();
+  });
+
   it("falls back to the result usage block when modelUsage is absent", () => {
     const parsed = parseClaudeStreamJson(`${resultEvent({})}\n`);
     expect(parsed.usage).toEqual({

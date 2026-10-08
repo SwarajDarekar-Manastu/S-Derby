@@ -933,4 +933,138 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byKindRow?.debitCents).toBe(4_000_000_000);
     expect(byKindRow?.netCents).toBe(4_000_000_000);
   });
+
+  it("reports subscription usage per agent without counting API-billed rows", async () => {
+    const companyId = randomUUID();
+    const claudeAgentId = randomUUID();
+    const codexAgentId = randomUUID();
+    const estimatedRunId = randomUUID();
+    const apiRunId = randomUUID();
+    const unrecordedRunId = randomUUID();
+    const codexRunId = randomUUID();
+    const since = new Date("2026-10-08T06:00:00.000Z");
+    const inWindow = new Date("2026-10-08T07:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: claudeAgentId,
+        companyId,
+        name: "Claude Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: codexAgentId,
+        companyId,
+        name: "Codex Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: estimatedRunId,
+        companyId,
+        agentId: claudeAgentId,
+        invocationSource: "on_demand",
+        status: "cancelled",
+        startedAt: inWindow,
+        usageJson: { inputTokens: 1_000 },
+        resultJson: { usageEstimated: true },
+      },
+      {
+        id: apiRunId,
+        companyId,
+        agentId: claudeAgentId,
+        invocationSource: "on_demand",
+        status: "succeeded",
+        startedAt: inWindow,
+        usageJson: { inputTokens: 5_000 },
+      },
+      {
+        id: unrecordedRunId,
+        companyId,
+        agentId: claudeAgentId,
+        invocationSource: "on_demand",
+        status: "failed",
+        startedAt: inWindow,
+      },
+      {
+        id: codexRunId,
+        companyId,
+        agentId: codexAgentId,
+        invocationSource: "on_demand",
+        status: "failed",
+        startedAt: inWindow,
+      },
+    ]);
+    const base = { agentId: claudeAgentId, provider: "anthropic", biller: "anthropic", model: "claude-sonnet-5-5" };
+    await costs.createEvent(companyId, {
+      ...base,
+      heartbeatRunId: estimatedRunId,
+      billingType: "subscription_included",
+      costStatus: "unpriced",
+      inputTokens: 1_000,
+      cachedInputTokens: 200,
+      outputTokens: 300,
+      costCents: 0,
+      occurredAt: inWindow,
+    });
+    await costs.createEvent(companyId, {
+      ...base,
+      heartbeatRunId: apiRunId,
+      billingType: "metered_api",
+      costStatus: "reported",
+      inputTokens: 5_000,
+      cachedInputTokens: 0,
+      outputTokens: 500,
+      costCents: 120,
+      occurredAt: inWindow,
+    });
+    await costs.createEvent(companyId, {
+      ...base,
+      billingType: "subscription_included",
+      costStatus: "unpriced",
+      inputTokens: 9_000,
+      cachedInputTokens: 0,
+      outputTokens: 900,
+      costCents: 0,
+      occurredAt: new Date("2026-10-08T05:00:00.000Z"),
+    });
+
+    const usage = await costs.subscriptionUsage(companyId, since);
+
+    expect(usage.since).toBe("2026-10-08T06:00:00.000Z");
+    expect(usage.totals).toEqual({
+      runs: 1,
+      estimatedRuns: 1,
+      unrecordedRuns: 1,
+      inputTokens: 1_000,
+      cachedInputTokens: 200,
+      outputTokens: 300,
+    });
+    expect(usage.agents).toHaveLength(1);
+    expect(usage.agents[0]).toMatchObject({
+      agentId: claudeAgentId,
+      agentName: "Claude Agent",
+      models: "claude-sonnet-5-5",
+      runs: 1,
+      estimatedRuns: 1,
+      unrecordedRuns: 1,
+    });
+  });
 });

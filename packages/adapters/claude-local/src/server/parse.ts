@@ -54,11 +54,32 @@ export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null
   return { inputTokens, outputTokens, cachedInputTokens };
 }
 
+/**
+ * Sum the usage carried by the assistant messages in a stream. A run stopped
+ * before Claude prints its `result` event (cancelled on issue reassignment, or
+ * killed) has no `modelUsage`, but every assistant event repeats its message's
+ * usage, so the latest usage per message id is an estimate of what the run used.
+ * The in-flight message may still be undercounted.
+ */
+function sumAssistantMessageUsage(usageByMessage: Map<string, Record<string, unknown>>): UsageSummary | null {
+  if (usageByMessage.size === 0) return null;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens = 0;
+  for (const usage of usageByMessage.values()) {
+    inputTokens += asNumber(usage.input_tokens, 0) + asNumber(usage.cache_creation_input_tokens, 0);
+    outputTokens += asNumber(usage.output_tokens, 0);
+    cachedInputTokens += asNumber(usage.cache_read_input_tokens, 0);
+  }
+  return { inputTokens, outputTokens, cachedInputTokens };
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+  const usageByMessage = new Map<string, Record<string, unknown>>();
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -76,6 +97,9 @@ export function parseClaudeStreamJson(stdout: string) {
     if (type === "assistant") {
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
       const message = parseObject(event.message);
+      const messageId = asString(message.id, "");
+      const messageUsage = parseObject(message.usage);
+      if (messageId && Object.keys(messageUsage).length > 0) usageByMessage.set(messageId, messageUsage);
       const content = Array.isArray(message.content) ? message.content : [];
       for (const entry of content) {
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
@@ -101,6 +125,7 @@ export function parseClaudeStreamJson(stdout: string) {
       costUsd: null as number | null,
       usage: null as UsageSummary | null,
       usageBasis: null as "per_run" | null,
+      partialUsage: sumAssistantMessageUsage(usageByMessage),
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
     };
@@ -125,6 +150,7 @@ export function parseClaudeStreamJson(stdout: string) {
     // modelUsage covers exactly this CLI invocation, so mark it per-run to
     // keep the server from applying its session-cumulative delta heuristic.
     usageBasis: "per_run" as const,
+    partialUsage: null as UsageSummary | null,
     summary,
     resultJson: finalResult,
   };

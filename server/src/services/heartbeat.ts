@@ -19899,6 +19899,67 @@ export function heartbeatService(
     }
   }
 
+  // A run cancelled while its adapter was still finishing (for example on issue
+  // reassignment) loses the race for the terminal write, so its usage would
+  // never reach the run row or the cost ledger. Record it once, without touching
+  // the agent's session or last-run fields, which a newer run may own by now.
+  async function recordUsageForLateCancelledRun(
+    agent: typeof agents.$inferSelect,
+    run: typeof heartbeatRuns.$inferSelect,
+    result: AdapterExecutionResult,
+    usageJson: Record<string, unknown>,
+    usage: UsageTotals,
+  ) {
+    const claimed = await db
+      .update(heartbeatRuns)
+      .set({ usageJson, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.usageJson)))
+      .returning({ id: heartbeatRuns.id });
+    if (claimed.length === 0) return;
+    const existing = await db
+      .select({ id: costEvents.id })
+      .from(costEvents)
+      .where(and(eq(costEvents.companyId, agent.companyId), eq(costEvents.heartbeatRunId, run.id)))
+      .limit(1);
+    if (existing.length > 0) return;
+    const inputTokens = usage.inputTokens ?? 0;
+    const outputTokens = usage.outputTokens ?? 0;
+    const cachedInputTokens = usage.cachedInputTokens ?? 0;
+    if (inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0) return;
+    const billingType = normalizeLedgerBillingType(result.billingType);
+    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
+    const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
+    await ensureRuntimeState(agent);
+    await db
+      .update(agentRuntimeState)
+      .set({
+        totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
+        totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
+        totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
+        totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${additionalCostCents}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(agentRuntimeState.agentId, agent.id));
+    await costService(db, budgetHooks).createEvent(agent.companyId, {
+      heartbeatRunId: run.id,
+      agentId: agent.id,
+      issueId: ledgerScope.issueId,
+      projectId: ledgerScope.projectId,
+      billingCode: ledgerScope.billingCode,
+      provider: result.provider ?? "unknown",
+      biller: resolveLedgerBiller(result),
+      billingType,
+      costStatus: resolveLedgerCostStatus({ costUsd: billedCostUsd, inputTokens, cachedInputTokens, outputTokens }),
+      model: result.model ?? "unknown",
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      costCents: additionalCostCents,
+      occurredAt: new Date(),
+    });
+  }
+
   // A 403 from claimQueuedRun comes from the run's own persisted identity
   // (an unverifiable interrupt receipt, a manual wake with no user). Those rows
   // do not change, so the claim fails the same way on every pass and restart.
@@ -25429,6 +25490,24 @@ export function heartbeatService(
               .then((rows) => rows[0] ?? null);
           }
           if (!persistedRun) {
+            if (
+              persistedRunWrite.run?.status === "cancelled" &&
+              usageJson &&
+              normalizedUsage &&
+              normalizeLedgerBillingType(adapterResult.billingType).startsWith("subscription_")
+            ) {
+              try {
+                await recordUsageForLateCancelledRun(
+                  agent,
+                  persistedRunWrite.run,
+                  adapterResult,
+                  usageJson,
+                  normalizedUsage,
+                );
+              } catch (err) {
+                logger.warn({ err, runId: run.id }, "failed to record usage for a late-cancelled run");
+              }
+            }
             logger.info(
               {
                 runId: run.id,

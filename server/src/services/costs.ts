@@ -379,6 +379,109 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     /**
+     * Subscription-billed usage per agent since `since` (the start of a Claude
+     * plan window). `estimatedRuns` counts runs whose usage was reconstructed
+     * from the stream because the run was cancelled before its result;
+     * `unrecordedRuns` counts started runs that recorded no usage at all.
+     */
+    subscriptionUsage: async (companyId: string, since: Date) => {
+      const subscriptionTypes = sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `);
+      const usageRows = await db
+        .select({
+          agentId: costEvents.agentId,
+          agentName: agents.name,
+          agentAppearance: agents.appearance,
+          models: sql<string>`string_agg(distinct ${costEvents.model}, ', ')`,
+          runs: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+          estimatedRuns: sql<number>`count(distinct case when (${heartbeatRuns.resultJson} ->> 'usageEstimated') = 'true' then ${costEvents.heartbeatRunId} end)::int`,
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+        })
+        .from(costEvents)
+        .leftJoin(agents, eq(costEvents.agentId, agents.id))
+        .leftJoin(heartbeatRuns, eq(costEvents.heartbeatRunId, heartbeatRuns.id))
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            gte(costEvents.occurredAt, since),
+            sql`${costEvents.billingType} in (${subscriptionTypes})`,
+          ),
+        )
+        .groupBy(costEvents.agentId, agents.name, agents.appearance)
+        .orderBy(desc(sumAsNumber(costEvents.outputTokens)));
+
+      const unrecordedRows = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          agentName: agents.name,
+          agentAppearance: agents.appearance,
+          unrecordedRuns: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            gte(heartbeatRuns.startedAt, since),
+            isNull(heartbeatRuns.usageJson),
+            eq(agents.adapterType, "claude_local"),
+            sql`${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out')`,
+          ),
+        )
+        .groupBy(heartbeatRuns.agentId, agents.name, agents.appearance);
+
+      const byAgent = new Map<string, {
+        agentId: string;
+        agentName: string | null;
+        agentAppearance: (typeof usageRows)[number]["agentAppearance"];
+        models: string | null;
+        runs: number;
+        estimatedRuns: number;
+        unrecordedRuns: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+      }>();
+      for (const row of usageRows) {
+        byAgent.set(row.agentId, { ...row, unrecordedRuns: 0 });
+      }
+      for (const row of unrecordedRows) {
+        const existing = byAgent.get(row.agentId);
+        if (existing) existing.unrecordedRuns = row.unrecordedRuns;
+        else byAgent.set(row.agentId, {
+          agentId: row.agentId,
+          agentName: row.agentName,
+          agentAppearance: row.agentAppearance,
+          models: null,
+          runs: 0,
+          estimatedRuns: 0,
+          unrecordedRuns: row.unrecordedRuns,
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+        });
+      }
+
+      const agentsOut = [...byAgent.values()].map((row) => {
+        const appearance = resolveAgentAppearance(row.agentAppearance, row.agentId);
+        return { ...row, agentAppearance: appearance, avatarUrl: agentAvatarUrl(appearance, 512) };
+      });
+      const totals = agentsOut.reduce(
+        (acc, row) => ({
+          runs: acc.runs + row.runs,
+          estimatedRuns: acc.estimatedRuns + row.estimatedRuns,
+          unrecordedRuns: acc.unrecordedRuns + row.unrecordedRuns,
+          inputTokens: acc.inputTokens + row.inputTokens,
+          cachedInputTokens: acc.cachedInputTokens + row.cachedInputTokens,
+          outputTokens: acc.outputTokens + row.outputTokens,
+        }),
+        { runs: 0, estimatedRuns: 0, unrecordedRuns: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      );
+      return { since: since.toISOString(), totals, agents: agentsOut };
+    },
+
+    /**
      * aggregates cost_events by provider for each of three rolling windows:
      * last 5 hours, last 24 hours, last 7 days.
      * purely internal consumption data, no external rate-limit sources.

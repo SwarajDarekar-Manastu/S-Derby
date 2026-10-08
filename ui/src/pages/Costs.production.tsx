@@ -25,6 +25,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
+import { SubscriptionUsagePanel } from "../components/SubscriptionUsagePanel";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
@@ -655,6 +656,8 @@ export function Costs() {
                   ))}
                 </div>
               ) : null}
+
+              <SubscriptionUsagePanel companyId={companyId} />
 
               <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
                 <Card>

@@ -5241,6 +5241,7 @@ const costSummaryPaths = [
   "finance-events",
   "window-spend",
   "quota-windows",
+  "subscription",
 ] as const;
 
 for (const segment of costSummaryPaths) {

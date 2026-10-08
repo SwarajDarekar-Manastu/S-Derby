@@ -109,6 +109,32 @@ export interface CostByAgentModel {
   outputTokens: number;
 }
 
+/** Subscription-billed usage per agent since the start of a Claude plan window. */
+export interface SubscriptionUsageTotals {
+  runs: number;
+  /** runs whose usage was reconstructed from the stream after a cancellation */
+  estimatedRuns: number;
+  /** started runs that recorded no usage at all */
+  unrecordedRuns: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}
+
+export interface SubscriptionUsageByAgent extends SubscriptionUsageTotals {
+  agentId: string;
+  agentName: string | null;
+  agentAppearance: AgentAppearance | null;
+  avatarUrl: string;
+  models: string | null;
+}
+
+export interface SubscriptionUsage {
+  since: string;
+  totals: SubscriptionUsageTotals;
+  agents: SubscriptionUsageByAgent[];
+}
+
 /** spend per provider for a fixed rolling time window */
 export interface CostWindowSpendRow {
   provider: string;

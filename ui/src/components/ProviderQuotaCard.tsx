@@ -65,8 +65,8 @@ export function ProviderQuotaCard({
     }
     const totalTokens = inputTokens + outputTokens;
     const subTokens = subInputTokens + subOutputTokens;
-    // denominator: api-billed tokens (from cost_events) + subscription tokens (from heartbeat_runs)
-    const allTokens = totalTokens + subTokens;
+    // cost_events token sums already include subscription-billed tokens
+    const allTokens = totalTokens;
     return {
       totalInputTokens: inputTokens,
       totalOutputTokens: outputTokens,

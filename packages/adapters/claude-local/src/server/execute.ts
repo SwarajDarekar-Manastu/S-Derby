@@ -1063,6 +1063,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "claude_transient_upstream"
         : null;
       const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
+      // Estimated usage is only reported for subscription runs, so API-key runs
+      // keep writing no ledger row when they end without a result, as before.
+      const partialUsage = billingType === "subscription" ? parsedStream.partialUsage : null;
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
@@ -1072,9 +1075,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
         errorMeta,
+        ...(partialUsage
+          ? {
+              usage: partialUsage,
+              usageBasis: "per_run" as const,
+              provider: "anthropic",
+              biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
+              model: parsedStream.model || model,
+              billingType,
+            }
+          : {}),
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
+          ...(partialUsage ? { usageEstimated: true } : {}),
           ...(errorFamily ? { errorFamily } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
