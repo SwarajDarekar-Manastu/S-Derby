@@ -58,7 +58,7 @@ export function SubscriptionUsagePanel({ companyId }: { companyId: string }) {
   const [windowKey, setWindowKey] = useState<PlanWindowKey>("session");
   const config = PLAN_WINDOWS[windowKey];
 
-  const { data: quotaData } = useQuery({
+  const { data: quotaData, isFetched: quotaFetched } = useQuery({
     queryKey: queryKeys.usageQuotaWindows(companyId),
     queryFn: () => costsApi.quotaWindows(companyId),
     enabled: !!companyId,
@@ -72,7 +72,8 @@ export function SubscriptionUsagePanel({ companyId }: { companyId: string }) {
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.subscriptionUsage(companyId, since),
     queryFn: () => costsApi.subscriptionUsage(companyId, since),
-    enabled: !!companyId,
+    // Wait for the plan windows so the first fetch already uses the plan's start.
+    enabled: !!companyId && quotaFetched,
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
@@ -103,7 +104,7 @@ export function SubscriptionUsagePanel({ companyId }: { companyId: string }) {
       <CardContent className="space-y-4 px-5 pb-5 pt-2">
         {error ? (
           <p className="text-sm text-destructive">{(error as Error).message}</p>
-        ) : isLoading || !totals ? (
+        ) : !quotaFetched || isLoading || !totals ? (
           <p className="text-sm text-muted-foreground">Loading subscription usage…</p>
         ) : (
           <>
@@ -153,10 +154,15 @@ export function SubscriptionUsagePanel({ companyId }: { companyId: string }) {
                     <div className="shrink-0 text-right text-sm tabular-nums">
                       <div className="font-medium">
                         {row.runs} {row.runs === 1 ? "run" : "runs"}
+                        {row.unrecordedRuns > 0 ? (
+                          <span className="font-normal text-muted-foreground"> · {row.unrecordedRuns} no usage</span>
+                        ) : null}
                       </div>
-                      <div className="text-xs text-muted-foreground">
-                        in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
-                      </div>
+                      {row.runs > 0 ? (
+                        <div className="text-xs text-muted-foreground">
+                          in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ))}
