@@ -810,7 +810,7 @@ export function IssueAssigneePausedNotice({
         : agent.pauseReason === "system"
           ? "It was paused by the system."
           : agent.pauseReason === "subscription_pacing"
-            ? "Subscription pacing paused it to keep the Claude plan from running out. It resumes when the plan window resets; to keep it running, mark it Never pause under Costs, Subscription."
+            ? "Subscription pacing paused it to keep its subscription plan from running out. It resumes when the plan window resets; to keep it running, mark it Never pause under Costs, Subscription."
             : "It was paused manually.";
   // Budget and pacing pauses clear on their own when their window resets;
   // resuming by hand would fight them, so the action is only offered for the rest.

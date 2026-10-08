@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { QuotaWindow } from "@paperclipai/shared";
+import {
+  findSubscriptionPlanWindows,
+  subscriptionPlanReportsUsage,
+  SUBSCRIPTION_PLANS,
+  SUBSCRIPTION_WEEK_WINDOW_HOURS,
+  type SubscriptionPlanProvider,
+  type SubscriptionPlanWindow,
+} from "@paperclipai/shared";
 import { costsApi } from "../api/costs";
 import { queryKeys } from "../lib/queryKeys";
 import { formatTokens } from "../lib/utils";
@@ -10,17 +17,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type PlanWindowKey = "session" | "week";
 
-const PLAN_WINDOWS: Record<PlanWindowKey, { label: string; quotaLabel: string; hours: number }> = {
-  session: { label: "Current session", quotaLabel: "currentsession", hours: 5 },
-  week: { label: "Current week", quotaLabel: "currentweekallmodels", hours: 7 * 24 },
-};
-
 const HOUR_MS = 60 * 60 * 1000;
 const ROLLING_STEP_MS = 5 * 60 * 1000;
-
-function normalizeLabel(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
 
 function formatReset(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -32,11 +30,11 @@ function formatReset(iso: string): string {
 }
 
 /**
- * The usage window starts where Claude's plan window started: its reset time
- * minus the window length. Without plan data it falls back to a rolling window,
+ * The usage window starts where the plan window started: its reset time minus
+ * the window length. Without plan data it falls back to a rolling window,
  * stepped every five minutes so the query key stays stable between renders.
  */
-function windowStart(planWindow: QuotaWindow | null, hours: number): string {
+function windowStart(planWindow: SubscriptionPlanWindow | null, hours: number): string {
   const lengthMs = hours * HOUR_MS;
   if (planWindow?.resetsAt) {
     return new Date(new Date(planWindow.resetsAt).getTime() - lengthMs).toISOString();
@@ -54,49 +52,62 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function SubscriptionUsagePanel({ companyId }: { companyId: string }) {
+export function SubscriptionUsagePanel({
+  companyId,
+  provider,
+}: {
+  companyId: string;
+  provider: SubscriptionPlanProvider;
+}) {
   const [windowKey, setWindowKey] = useState<PlanWindowKey>("session");
-  const config = PLAN_WINDOWS[windowKey];
+  const planDefinition = SUBSCRIPTION_PLANS[provider];
+  const reportsUsage = subscriptionPlanReportsUsage(provider);
+  const hours = windowKey === "session" ? planDefinition.sessionHours : SUBSCRIPTION_WEEK_WINDOW_HOURS;
 
   const { data: quotaData, isFetched: quotaFetched } = useQuery({
     queryKey: queryKeys.usageQuotaWindows(companyId),
     queryFn: () => costsApi.quotaWindows(companyId),
-    enabled: !!companyId,
+    enabled: !!companyId && reportsUsage,
     refetchInterval: 300_000,
     staleTime: 60_000,
   });
-  const anthropic = quotaData?.find((result) => result.provider === "anthropic" && result.ok) ?? null;
-  const planWindow = anthropic?.windows.find((window) => normalizeLabel(window.label) === config.quotaLabel) ?? null;
-  const since = windowStart(planWindow, config.hours);
+  const quota = quotaData?.find((result) => result.provider === provider && result.ok) ?? null;
+  const planWindows = findSubscriptionPlanWindows(provider, quota?.windows ?? []);
+  const planWindow = windowKey === "session" ? planWindows.session : planWindows.week;
+  const since = windowStart(planWindow, hours);
+  const planReady = !reportsUsage || quotaFetched;
 
   const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.subscriptionUsage(companyId, since),
-    queryFn: () => costsApi.subscriptionUsage(companyId, since),
+    queryKey: queryKeys.subscriptionUsage(companyId, since, provider),
+    queryFn: () => costsApi.subscriptionUsage(companyId, since, provider),
     // Wait for the plan windows so the first fetch already uses the plan's start.
-    enabled: !!companyId && quotaFetched,
+    enabled: !!companyId && planReady,
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
   const totals = data?.totals;
-  const windowNote = planWindow?.resetsAt
-    ? `Claude plan window, resets ${formatReset(planWindow.resetsAt)}.`
-    : `Last ${config.hours === 5 ? "5 hours" : "7 days"}. Claude plan data is unavailable, so this is a rolling window.`;
+  const rollingName = hours === SUBSCRIPTION_WEEK_WINDOW_HOURS ? "7 days" : `${hours} hours`;
+  const windowNote = planWindow
+    ? `${planDefinition.label} plan window, resets ${formatReset(planWindow.resetsAt)}.`
+    : reportsUsage
+      ? `Last ${rollingName}. ${planDefinition.label} plan data is unavailable, so this is a rolling window.`
+      : `Last ${rollingName}. ${planDefinition.label} does not report plan usage, so only tokens are shown.`;
 
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-base">Claude subscription usage</CardTitle>
+            <CardTitle className="text-base">{planDefinition.label} subscription usage</CardTitle>
             <CardDescription>
-              Runs billed to your Claude plan. They cost $0 in the ledger and never count toward budgets.
+              Runs billed to your {planDefinition.label} plan. They cost $0 in the ledger and never count toward budgets.
             </CardDescription>
           </div>
           <Tabs value={windowKey} onValueChange={(value) => setWindowKey(value as PlanWindowKey)}>
             <TabsList variant="line">
-              <TabsTrigger value="session">{PLAN_WINDOWS.session.label}</TabsTrigger>
-              <TabsTrigger value="week">{PLAN_WINDOWS.week.label}</TabsTrigger>
+              <TabsTrigger value="session">{planDefinition.sessionWindowName}</TabsTrigger>
+              <TabsTrigger value="week">{planDefinition.weekWindowName}</TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
@@ -104,14 +115,14 @@ export function SubscriptionUsagePanel({ companyId }: { companyId: string }) {
       <CardContent className="space-y-4 px-5 pb-5 pt-2">
         {error ? (
           <p className="text-sm text-destructive">{(error as Error).message}</p>
-        ) : !quotaFetched || isLoading || !totals ? (
+        ) : !planReady || isLoading || !totals ? (
           <p className="text-sm text-muted-foreground">Loading subscription usage…</p>
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <Stat
                 label="Plan used"
-                value={planWindow?.usedPercent != null ? `${planWindow.usedPercent}%` : "—"}
+                value={planWindow ? `${planWindow.usedPercent}%` : "—"}
               />
               <Stat label="Runs" value={String(totals.runs)} />
               <Stat label="Input tokens" value={formatTokens(totals.inputTokens + totals.cachedInputTokens)} />
@@ -123,12 +134,13 @@ export function SubscriptionUsagePanel({ companyId }: { companyId: string }) {
               {totals.estimatedRuns > 0 ? (
                 <p>
                   {totals.estimatedRuns} {totals.estimatedRuns === 1 ? "run is" : "runs are"} estimated: cancelled
-                  before Claude reported final usage.
+                  before {planDefinition.label} reported final usage.
                 </p>
               ) : null}
               {totals.unrecordedRuns > 0 ? (
                 <p>
-                  {totals.unrecordedRuns} Claude {totals.unrecordedRuns === 1 ? "run" : "runs"} recorded no usage.
+                  {totals.unrecordedRuns} {planDefinition.label} {totals.unrecordedRuns === 1 ? "run" : "runs"} recorded no
+                  usage.
                 </p>
               ) : null}
             </div>

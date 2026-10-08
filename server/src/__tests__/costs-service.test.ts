@@ -934,7 +934,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byKindRow?.netCents).toBe(4_000_000_000);
   });
 
-  it("reports subscription usage per agent without counting API-billed rows", async () => {
+  it("reports one plan's subscription usage per agent without counting API-billed or other plans' rows", async () => {
     const companyId = randomUUID();
     const claudeAgentId = randomUUID();
     const codexAgentId = randomUUID();
@@ -1036,6 +1036,19 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       occurredAt: inWindow,
     });
     await costs.createEvent(companyId, {
+      agentId: codexAgentId,
+      provider: "openai",
+      biller: "chatgpt",
+      model: "gpt-5.6-terra",
+      billingType: "subscription_included",
+      costStatus: "unpriced",
+      inputTokens: 7_000,
+      cachedInputTokens: 0,
+      outputTokens: 700,
+      costCents: 0,
+      occurredAt: inWindow,
+    });
+    await costs.createEvent(companyId, {
       ...base,
       billingType: "subscription_included",
       costStatus: "unpriced",
@@ -1046,7 +1059,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       occurredAt: new Date("2026-10-08T05:00:00.000Z"),
     });
 
-    const usage = await costs.subscriptionUsage(companyId, since);
+    const usage = await costs.subscriptionUsage(companyId, since, "anthropic");
 
     expect(usage.since).toBe("2026-10-08T06:00:00.000Z");
     expect(usage.totals).toEqual({
@@ -1066,5 +1079,16 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       estimatedRuns: 1,
       unrecordedRuns: 1,
     });
+
+    const codex = await costs.subscriptionUsage(companyId, since, "openai");
+    expect(codex.totals).toEqual({
+      runs: 0,
+      estimatedRuns: 0,
+      unrecordedRuns: 1,
+      inputTokens: 7_000,
+      cachedInputTokens: 0,
+      outputTokens: 700,
+    });
+    expect(codex.agents.map((row) => row.agentName)).toEqual(["Codex Agent"]);
   });
 });

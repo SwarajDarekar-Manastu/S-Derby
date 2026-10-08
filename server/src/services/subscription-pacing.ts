@@ -5,12 +5,16 @@ import {
   evaluateSubscriptionPacing,
   findSubscriptionPlanWindows,
   normalizeSubscriptionPacingPolicy,
+  subscriptionPlanReportsUsage,
   subscriptionPlanWindowStart,
+  SUBSCRIPTION_PLAN_PROVIDERS,
+  SUBSCRIPTION_PLANS,
   SUBSCRIPTION_WEEK_WINDOW_HOURS,
   type ProviderQuotaResult,
   type SubscriptionPacingPause,
   type SubscriptionPacingPolicy,
   type SubscriptionPacingStatus,
+  type SubscriptionPlanProvider,
   type SubscriptionPlanWindows,
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
@@ -24,6 +28,7 @@ const PACEABLE_STATUSES = ["active", "idle", "running", "error"];
 const WEEK_MS = SUBSCRIPTION_WEEK_WINDOW_HOURS * 60 * 60 * 1000;
 
 type LastSweep = NonNullable<SubscriptionPacingStatus["lastSweep"]>;
+type PlanReadings = Partial<Record<SubscriptionPlanProvider, { plan: SubscriptionPlanWindows | null; error: string | null }>>;
 const lastSweepByCompany = new Map<string, LastSweep>();
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -44,19 +49,34 @@ function hasEnvValue(env: Record<string, unknown>, key: string): boolean {
   return type === "secret_ref" || type === "user_secret_ref";
 }
 
-/**
- * Mirrors the Claude adapter's billing decision (`resolveClaudeBillingType`)
- * from the agent's stored config: Bedrock and API-key agents are metered, every
- * other Claude agent runs on the machine's Claude subscription.
- */
-export function runsOnClaudeSubscription(agent: { adapterType: string; adapterConfig: unknown }): boolean {
-  if (agent.adapterType !== "claude_local") return false;
-  const config = asRecord(agent.adapterConfig);
-  if (config.managedAiConnection) return false;
-  const env = asRecord(config.env);
-  if (hasEnvValue(env, "ANTHROPIC_API_KEY") || hasEnvValue(env, "ANTHROPIC_BEDROCK_BASE_URL")) return false;
+function usesClaudeBedrock(env: Record<string, unknown>): boolean {
   const useBedrock = plainEnvValue(env, "CLAUDE_CODE_USE_BEDROCK")?.toLowerCase();
-  return useBedrock !== "1" && useBedrock !== "true";
+  return useBedrock === "1" || useBedrock === "true" || hasEnvValue(env, "ANTHROPIC_BEDROCK_BASE_URL");
+}
+
+/**
+ * The subscription plan an agent bills, read from its stored config the way
+ * each adapter decides its billing type at run time: an agent with an API key,
+ * a managed AI connection, or (for Claude) Bedrock is metered, not on a plan.
+ */
+export function subscriptionPlanProvider(agent: {
+  adapterType: string;
+  adapterConfig: unknown;
+}): SubscriptionPlanProvider | null {
+  const provider = SUBSCRIPTION_PLAN_PROVIDERS.find((key) => SUBSCRIPTION_PLANS[key].adapterType === agent.adapterType);
+  if (!provider) return null;
+  const config = asRecord(agent.adapterConfig);
+  if (config.managedAiConnection) return null;
+  const env = asRecord(config.env);
+  if (SUBSCRIPTION_PLANS[provider].apiKeyEnvVars.some((key) => hasEnvValue(env, key))) return null;
+  if (provider === "anthropic" && usesClaudeBedrock(env)) return null;
+  return provider;
+}
+
+function pacedPlans(policy: SubscriptionPacingPolicy): SubscriptionPlanProvider[] {
+  return SUBSCRIPTION_PLAN_PROVIDERS.filter(
+    (provider) => policy.plans[provider].autoPause && subscriptionPlanReportsUsage(provider),
+  );
 }
 
 export interface SubscriptionPacingServiceDeps {
@@ -69,13 +89,27 @@ export function subscriptionPacingService(db: Db, deps: SubscriptionPacingServic
   const now = deps.now ?? (() => new Date());
   const costs = costService(db);
 
-  async function readPlanWindows(): Promise<{ plan: SubscriptionPlanWindows | null; error: string | null }> {
-    const anthropic = (await fetchQuotaWindows()).find((result) => result.provider === "anthropic");
-    if (!anthropic) return { plan: null, error: "No Claude adapter reports plan usage." };
-    if (!anthropic.ok) return { plan: null, error: anthropic.error ?? "Claude plan usage is unavailable." };
-    const plan = findSubscriptionPlanWindows(anthropic.windows);
-    if (!plan.session && !plan.week) return { plan: null, error: "Claude reported no session or weekly window." };
-    return { plan, error: null };
+  /** One quota fetch covers every provider; read each plan's windows from it. */
+  async function readPlans(): Promise<PlanReadings> {
+    const results = await fetchQuotaWindows();
+    const readings: PlanReadings = {};
+    for (const provider of SUBSCRIPTION_PLAN_PROVIDERS) {
+      if (!subscriptionPlanReportsUsage(provider)) continue;
+      const label = SUBSCRIPTION_PLANS[provider].label;
+      const result = results.find((row) => row.provider === provider);
+      if (!result) {
+        readings[provider] = { plan: null, error: `${label} plan usage is not available on this server.` };
+      } else if (!result.ok) {
+        readings[provider] = { plan: null, error: result.error ?? `${label} plan usage is unavailable.` };
+      } else {
+        const plan = findSubscriptionPlanWindows(provider, result.windows);
+        readings[provider] =
+          plan.session || plan.week
+            ? { plan, error: null }
+            : { plan: null, error: `${label} reported no session or weekly window.` };
+      }
+    }
+    return readings;
   }
 
   async function readPolicy(companyId: string): Promise<SubscriptionPacingPolicy> {
@@ -103,7 +137,12 @@ export function subscriptionPacingService(db: Db, deps: SubscriptionPacingServic
       .where(and(eq(agents.companyId, companyId), notInArray(agents.status, ["terminated", "pending_approval"])));
   }
 
-  async function pauseAgent(companyId: string, agentId: string, pause: SubscriptionPacingPause): Promise<boolean> {
+  async function pauseAgent(
+    companyId: string,
+    agentId: string,
+    provider: SubscriptionPlanProvider,
+    pause: SubscriptionPacingPause,
+  ): Promise<boolean> {
     const at = now();
     const updated = await db
       .update(agents)
@@ -118,7 +157,7 @@ export function subscriptionPacingService(db: Db, deps: SubscriptionPacingServic
       action: "agent.paused",
       entityType: "agent",
       entityId: agentId,
-      details: { reason: PAUSE_REASON, ...pause },
+      details: { reason: PAUSE_REASON, provider, ...pause },
     });
     return true;
   }
@@ -144,67 +183,76 @@ export function subscriptionPacingService(db: Db, deps: SubscriptionPacingServic
   }
 
   /**
-   * Pause the paced agents a rule wants paused and resume the agents pacing
-   * paused that no rule wants paused any more. Without plan data it changes
-   * nothing, except that turning auto-pause off always releases pacing's pauses.
+   * For each plan, pause the agents a rule wants paused and resume the agents
+   * pacing paused that no rule wants paused any more. A plan whose usage could
+   * not be read changes nothing; a plan with auto-pause off releases pacing's
+   * pauses. Agents that left every plan are released too.
    */
-  async function applyCompany(companyId: string, plan: SubscriptionPlanWindows | null) {
+  async function applyCompany(companyId: string, readings: PlanReadings) {
     const policy = await readPolicy(companyId);
-    const companyAgents = await listCompanyAgents(companyId);
-    const pacingPaused = companyAgents.filter((agent) => agent.status === "paused" && agent.pauseReason === PAUSE_REASON);
+    const companyAgents = (await listCompanyAgents(companyId)).map((agent) => ({
+      ...agent,
+      provider: subscriptionPlanProvider(agent),
+    }));
+    const isPacingPaused = (agent: { status: string; pauseReason: string | null }) =>
+      agent.status === "paused" && agent.pauseReason === PAUSE_REASON;
     let paused = 0;
     let resumed = 0;
+    const errors: LastSweep["errors"] = {};
 
-    if (!policy.autoPause) {
-      for (const agent of pacingPaused) {
-        if (await resumeAgent(companyId, agent.id, "auto_pause_off")) resumed += 1;
-      }
-      return { paused, resumed };
-    }
-    if (!plan) return { paused, resumed };
-
-    const paced = companyAgents.filter(runsOnClaudeSubscription);
-    const weekStart = plan.week
-      ? subscriptionPlanWindowStart(plan.week, SUBSCRIPTION_WEEK_WINDOW_HOURS)
-      : new Date(now().getTime() - WEEK_MS);
-    const usage = await costs.subscriptionUsage(companyId, weekStart);
-    const tokensByAgent = new Map(usage.agents.map((row) => [row.agentId, row.inputTokens + row.outputTokens]));
-    const evaluations = evaluateSubscriptionPacing({
-      policy,
-      plan,
-      agents: paced.map((agent) => ({ agentId: agent.id, weeklyTokens: tokensByAgent.get(agent.id) ?? 0 })),
-    });
-    const pauseByAgent = new Map(evaluations.map((row) => [row.agentId, row.pause]));
-
-    for (const agent of paced) {
-      const pause = pauseByAgent.get(agent.id) ?? null;
-      if (pause && PACEABLE_STATUSES.includes(agent.status)) {
-        if (await pauseAgent(companyId, agent.id, pause)) paused += 1;
+    for (const agent of companyAgents) {
+      if (agent.provider === null && isPacingPaused(agent)) {
+        if (await resumeAgent(companyId, agent.id, "not_on_subscription")) resumed += 1;
       }
     }
-    for (const agent of pacingPaused) {
-      if (pauseByAgent.get(agent.id)) continue;
-      const why = policy.exemptAgentIds.includes(agent.id)
-        ? "exempt"
-        : runsOnClaudeSubscription(agent)
-          ? "no_rule_applies"
-          : "not_on_subscription";
-      if (await resumeAgent(companyId, agent.id, why)) resumed += 1;
+
+    const paced = new Set(pacedPlans(policy));
+    for (const provider of SUBSCRIPTION_PLAN_PROVIDERS) {
+      const planAgents = companyAgents.filter((agent) => agent.provider === provider);
+      if (!paced.has(provider)) {
+        for (const agent of planAgents.filter(isPacingPaused)) {
+          if (await resumeAgent(companyId, agent.id, "auto_pause_off")) resumed += 1;
+        }
+        continue;
+      }
+      const reading = readings[provider];
+      if (!reading?.plan) {
+        if (reading?.error) errors[provider] = reading.error;
+        continue;
+      }
+
+      const plan = reading.plan;
+      const weekStart = plan.week
+        ? subscriptionPlanWindowStart(plan.week, SUBSCRIPTION_WEEK_WINDOW_HOURS)
+        : new Date(now().getTime() - WEEK_MS);
+      const usage = await costs.subscriptionUsage(companyId, weekStart, provider);
+      const tokensByAgent = new Map(usage.agents.map((row) => [row.agentId, row.inputTokens + row.outputTokens]));
+      const evaluations = evaluateSubscriptionPacing({
+        policy,
+        provider,
+        plan,
+        agents: planAgents.map((agent) => ({ agentId: agent.id, weeklyTokens: tokensByAgent.get(agent.id) ?? 0 })),
+      });
+      const pauseByAgent = new Map(evaluations.map((row) => [row.agentId, row.pause]));
+
+      for (const agent of planAgents) {
+        const pause = pauseByAgent.get(agent.id) ?? null;
+        if (pause && PACEABLE_STATUSES.includes(agent.status)) {
+          if (await pauseAgent(companyId, agent.id, provider, pause)) paused += 1;
+        } else if (!pause && isPacingPaused(agent)) {
+          const why = policy.exemptAgentIds.includes(agent.id) ? "exempt" : "no_rule_applies";
+          if (await resumeAgent(companyId, agent.id, why)) resumed += 1;
+        }
+      }
     }
-    return { paused, resumed };
+    return { paused, resumed, errors };
   }
 
-  async function runForCompanies(companyIds: string[], needsPlan: boolean) {
-    const { plan, error } = needsPlan ? await readPlanWindows() : { plan: null, error: null };
+  async function runForCompanies(companyIds: string[], needsPlans: boolean) {
+    const readings = needsPlans ? await readPlans() : {};
     for (const companyId of companyIds) {
-      const result = await applyCompany(companyId, plan);
-      lastSweepByCompany.set(companyId, {
-        at: now().toISOString(),
-        ok: error === null,
-        error,
-        paused: result.paused,
-        resumed: result.resumed,
-      });
+      const result = await applyCompany(companyId, readings);
+      lastSweepByCompany.set(companyId, { at: now().toISOString(), ...result });
     }
   }
 
@@ -235,10 +283,12 @@ export function subscriptionPacingService(db: Db, deps: SubscriptionPacingServic
       return {
         policy,
         agents: companyAgents
-          .filter((agent) => runsOnClaudeSubscription(agent) || agent.pauseReason === PAUSE_REASON)
-          .map((agent) => ({
+          .map((agent) => ({ agent, provider: subscriptionPlanProvider(agent) }))
+          .filter(({ agent, provider }) => provider !== null || agent.pauseReason === PAUSE_REASON)
+          .map(({ agent, provider }) => ({
             agentId: agent.id,
             agentName: agent.name,
+            provider,
             status: agent.status,
             pauseReason: agent.pauseReason,
             pausedAt: agent.pausedAt ? agent.pausedAt.toISOString() : null,
@@ -247,31 +297,31 @@ export function subscriptionPacingService(db: Db, deps: SubscriptionPacingServic
       };
     },
 
-    /** Evaluate one company now, fetching the plan windows only when auto-pause is on. */
+    /** Evaluate one company now, reading plan usage only when one of its plans is paced. */
     async evaluateCompany(companyId: string) {
       const policy = await readPolicy(companyId);
-      await runForCompanies([companyId], policy.autoPause);
+      await runForCompanies([companyId], pacedPlans(policy).length > 0);
     },
 
     /**
-     * Periodic sweep over every company with auto-pause on or with agents that
-     * pacing paused. The plan windows are fetched once, and only when needed.
+     * Periodic sweep over every company with a paced plan or with agents that
+     * pacing paused. Plan usage is read once, and only when some plan is paced.
      */
     async sweep() {
       const rows = await db
         .select({ id: companies.id, subscriptionPacing: companies.subscriptionPacing })
         .from(companies)
         .where(notInArray(companies.status, ["archived"]));
-      const autoPauseIds = rows
-        .filter((row) => normalizeSubscriptionPacingPolicy(row.subscriptionPacing).autoPause)
+      const pacedIds = rows
+        .filter((row) => pacedPlans(normalizeSubscriptionPacingPolicy(row.subscriptionPacing)).length > 0)
         .map((row) => row.id);
       const withPacingPauses = await db
         .selectDistinct({ companyId: agents.companyId })
         .from(agents)
         .where(and(eq(agents.status, "paused"), eq(agents.pauseReason, PAUSE_REASON)));
-      const companyIds = [...new Set([...autoPauseIds, ...withPacingPauses.map((row) => row.companyId)])];
+      const companyIds = [...new Set([...pacedIds, ...withPacingPauses.map((row) => row.companyId)])];
       if (companyIds.length === 0) return;
-      await runForCompanies(companyIds, autoPauseIds.length > 0);
+      await runForCompanies(companyIds, pacedIds.length > 0);
     },
   };
 }

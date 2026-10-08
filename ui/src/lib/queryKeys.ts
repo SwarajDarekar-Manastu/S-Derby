@@ -701,8 +701,8 @@ export const queryKeys = {
     ["usage-window-spend", companyId] as const,
   usageQuotaWindows: (companyId: string) =>
     ["usage-quota-windows", companyId] as const,
-  subscriptionUsage: (companyId: string, since: string) =>
-    ["subscription-usage", companyId, since] as const,
+  subscriptionUsage: (companyId: string, since: string, provider: string) =>
+    ["subscription-usage", companyId, provider, since] as const,
   subscriptionPacing: (companyId: string) =>
     ["subscription-pacing", companyId] as const,
   heartbeats: (companyId: string, agentId?: string) =>

@@ -25,8 +25,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
-import { SubscriptionUsagePanel } from "../components/SubscriptionUsagePanel";
-import { SubscriptionPacingCard } from "../components/SubscriptionPacingCard";
+import { SubscriptionPlansSection } from "../components/SubscriptionPlansSection";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
@@ -659,7 +658,7 @@ export function Costs() {
                 </div>
               ) : null}
 
-              <SubscriptionUsagePanel companyId={companyId} />
+              <SubscriptionPlansSection companyId={companyId} view="overview" />
 
               <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
                 <Card>
@@ -839,8 +838,7 @@ export function Costs() {
         </TabsContent>
 
         <TabsContent value="subscription" className="mt-4 space-y-4">
-          <SubscriptionUsagePanel companyId={companyId} />
-          <SubscriptionPacingCard companyId={companyId} />
+          <SubscriptionPlansSection companyId={companyId} view="full" />
         </TabsContent>
 
         <TabsContent value="budgets" className="mt-4 space-y-4">

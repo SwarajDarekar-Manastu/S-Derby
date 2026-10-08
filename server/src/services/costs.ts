@@ -1,4 +1,4 @@
-import { agentAvatarUrl, resolveAgentAppearance } from "@paperclipai/shared";
+import { agentAvatarUrl, resolveAgentAppearance, SUBSCRIPTION_PLANS, type SubscriptionPlanProvider } from "@paperclipai/shared";
 import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
@@ -379,12 +379,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     /**
-     * Subscription-billed usage per agent since `since` (the start of a Claude
-     * plan window). `estimatedRuns` counts runs whose usage was reconstructed
-     * from the stream because the run was cancelled before its result;
-     * `unrecordedRuns` counts started runs that recorded no usage at all.
+     * Subscription-billed usage per agent on one provider's plan since `since`
+     * (the start of a plan window). `estimatedRuns` counts runs whose usage was
+     * reconstructed from the stream because the run was cancelled before its
+     * result; `unrecordedRuns` counts that plan's adapter's finished runs that
+     * recorded no usage at all.
      */
-    subscriptionUsage: async (companyId: string, since: Date) => {
+    subscriptionUsage: async (companyId: string, since: Date, provider: SubscriptionPlanProvider) => {
       const subscriptionTypes = sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `);
       const usageRows = await db
         .select({
@@ -405,6 +406,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           and(
             eq(costEvents.companyId, companyId),
             gte(costEvents.occurredAt, since),
+            eq(costEvents.provider, provider),
             sql`${costEvents.billingType} in (${subscriptionTypes})`,
           ),
         )
@@ -425,7 +427,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             eq(heartbeatRuns.companyId, companyId),
             gte(heartbeatRuns.startedAt, since),
             isNull(heartbeatRuns.usageJson),
-            eq(agents.adapterType, "claude_local"),
+            eq(agents.adapterType, SUBSCRIPTION_PLANS[provider].adapterType),
             sql`${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out')`,
           ),
         )

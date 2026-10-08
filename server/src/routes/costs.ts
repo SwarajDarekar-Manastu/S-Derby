@@ -5,7 +5,9 @@ import {
   createFinanceEventSchema,
   normalizeIssueIdentifier,
   resolveBudgetIncidentSchema,
+  SUBSCRIPTION_PLAN_PROVIDERS,
   subscriptionPacingPolicySchema,
+  type SubscriptionPlanProvider,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
 } from "@paperclipai/shared";
@@ -45,6 +47,10 @@ export function parseCostLimit(query: Record<string, unknown>) {
     throw badRequest("invalid 'limit' value");
   }
   return limit;
+}
+
+function isSubscriptionPlanProvider(value: string): value is SubscriptionPlanProvider {
+  return (SUBSCRIPTION_PLAN_PROVIDERS as readonly string[]).includes(value);
 }
 
 export function costRoutes(
@@ -282,7 +288,12 @@ export function costRoutes(
       res.status(400).json({ error: "since must be an ISO date" });
       return;
     }
-    res.json(await costs.subscriptionUsage(companyId, since));
+    const provider = typeof req.query.provider === "string" ? req.query.provider : "anthropic";
+    if (!isSubscriptionPlanProvider(provider)) {
+      res.status(400).json({ error: `provider must be one of ${SUBSCRIPTION_PLAN_PROVIDERS.join(", ")}` });
+      return;
+    }
+    res.json(await costs.subscriptionUsage(companyId, since, provider));
   });
 
   router.get("/companies/:companyId/costs/subscription-pacing", async (req, res) => {

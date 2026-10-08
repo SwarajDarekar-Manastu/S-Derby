@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { activityLog, agents, companies, costEvents, createDb, heartbeatRuns } from "@paperclipai/db";
-import type { ProviderQuotaResult, SubscriptionPacingPolicy } from "@paperclipai/shared";
-import { runsOnClaudeSubscription, subscriptionPacingService } from "../services/subscription-pacing.ts";
+import type { ProviderQuotaResult, SubscriptionPacingPolicy, SubscriptionPlanPacing } from "@paperclipai/shared";
+import { subscriptionPlanProvider, subscriptionPacingService } from "../services/subscription-pacing.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -12,6 +12,21 @@ import {
 const NOW = new Date("2026-10-08T12:00:00.000Z");
 const SESSION_RESET = "2026-10-08T15:50:00.000Z";
 const WEEK_RESET = "2026-10-09T23:00:00.000Z";
+
+const OFF: SubscriptionPlanPacing = { autoPause: false, sessionPauseAtPercent: 90, weeklyPauseAtPercent: 95 };
+const ON: SubscriptionPlanPacing = { ...OFF, autoPause: true };
+
+function claudePolicy(
+  claude: SubscriptionPlanPacing,
+  overrides: Partial<Omit<SubscriptionPacingPolicy, "plans">> = {},
+): SubscriptionPacingPolicy {
+  return {
+    plans: { anthropic: claude, openai: OFF, google: OFF },
+    agentWeeklyLimitPercent: {},
+    exemptAgentIds: [],
+    ...overrides,
+  };
+}
 
 function quota(sessionPercent: number, weekPercent: number): ProviderQuotaResult[] {
   return [
@@ -26,25 +41,35 @@ function quota(sessionPercent: number, weekPercent: number): ProviderQuotaResult
   ];
 }
 
-describe("runsOnClaudeSubscription", () => {
-  it("treats a Claude agent without an API key, Bedrock, or managed connection as subscription-billed", () => {
-    expect(runsOnClaudeSubscription({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5" } })).toBe(true);
+describe("subscriptionPlanProvider", () => {
+  it("reads which plan an agent bills the way each adapter decides at run time", () => {
+    expect(subscriptionPlanProvider({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5" } })).toBe(
+      "anthropic",
+    );
     expect(
-      runsOnClaudeSubscription({ adapterType: "claude_local", adapterConfig: { env: { ANTHROPIC_API_KEY: "sk-ant-x" } } }),
-    ).toBe(false);
+      subscriptionPlanProvider({ adapterType: "claude_local", adapterConfig: { env: { ANTHROPIC_API_KEY: "sk-ant-x" } } }),
+    ).toBeNull();
     expect(
-      runsOnClaudeSubscription({
+      subscriptionPlanProvider({
         adapterType: "claude_local",
         adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: randomUUID() } } },
       }),
-    ).toBe(false);
+    ).toBeNull();
     expect(
-      runsOnClaudeSubscription({
+      subscriptionPlanProvider({
         adapterType: "claude_local",
         adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: { type: "plain", value: "1" } } },
       }),
-    ).toBe(false);
-    expect(runsOnClaudeSubscription({ adapterType: "codex_local", adapterConfig: {} })).toBe(false);
+    ).toBeNull();
+    expect(subscriptionPlanProvider({ adapterType: "codex_local", adapterConfig: {} })).toBe("openai");
+    expect(
+      subscriptionPlanProvider({ adapterType: "codex_local", adapterConfig: { env: { OPENAI_API_KEY: "sk-x" } } }),
+    ).toBeNull();
+    expect(subscriptionPlanProvider({ adapterType: "gemini_local", adapterConfig: {} })).toBe("google");
+    expect(
+      subscriptionPlanProvider({ adapterType: "gemini_local", adapterConfig: { env: { GOOGLE_API_KEY: "g-x" } } }),
+    ).toBeNull();
+    expect(subscriptionPlanProvider({ adapterType: "cursor_local", adapterConfig: {} })).toBeNull();
   });
 });
 
@@ -72,7 +97,7 @@ describeEmbeddedPostgres("subscription pacing service", () => {
     await tempDb?.cleanup();
   });
 
-  async function seed(policy: Partial<SubscriptionPacingPolicy>) {
+  async function seed(policy: SubscriptionPacingPolicy) {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -124,14 +149,10 @@ describeEmbeddedPostgres("subscription pacing service", () => {
   }
 
   it("pauses the subscription agents when the session reaches its limit, and leaves the rest alone", async () => {
-    const { companyId, ids } = await seed({ autoPause: true, exemptAgentIds: [] });
+    const { companyId, ids } = await seed(claudePolicy(ON));
     const fetchQuotaWindows = vi.fn().mockResolvedValue(quota(93, 40));
     const qaExempt = subscriptionPacingService(db, { fetchQuotaWindows, now: () => NOW });
-    await qaExempt.updatePolicy(
-      companyId,
-      { autoPause: true, sessionPauseAtPercent: 90, weeklyPauseAtPercent: 95, agentWeeklyLimitPercent: {}, exemptAgentIds: [ids.qa] },
-      "user-1",
-    );
+    await qaExempt.updatePolicy(companyId, claudePolicy(ON, { exemptAgentIds: [ids.qa] }), "user-1");
 
     await qaExempt.evaluateCompany(companyId);
 
@@ -148,17 +169,18 @@ describeEmbeddedPostgres("subscription pacing service", () => {
     expect(pauses).toHaveLength(2);
     expect(pauses.find((row) => row.entityId === ids.cto)?.details).toEqual({
       reason: "subscription_pacing",
+      provider: "anthropic",
       rule: "session",
       observedPercent: 93,
       limitPercent: 90,
       resumesAt: SESSION_RESET,
     });
     const status = await qaExempt.status(companyId);
-    expect(status.lastSweep).toEqual({ at: NOW.toISOString(), ok: true, error: null, paused: 2, resumed: 0 });
+    expect(status.lastSweep).toEqual({ at: NOW.toISOString(), paused: 2, resumed: 0, errors: {} });
   });
 
   it("resumes only the agents pacing paused once no rule applies", async () => {
-    const { companyId, ids } = await seed({ autoPause: true });
+    const { companyId, ids } = await seed(claudePolicy(ON));
     const fetchQuotaWindows = vi.fn().mockResolvedValueOnce(quota(95, 40)).mockResolvedValueOnce(quota(4, 41));
     const pacing = subscriptionPacingService(db, { fetchQuotaWindows, now: () => NOW });
 
@@ -177,18 +199,14 @@ describeEmbeddedPostgres("subscription pacing service", () => {
   });
 
   it("releases pacing's pauses when auto-pause is turned off, without reading the plan", async () => {
-    const { companyId, ids } = await seed({ autoPause: true });
+    const { companyId, ids } = await seed(claudePolicy(ON));
     await db
       .update(agents)
       .set({ status: "paused", pauseReason: "subscription_pacing", pausedAt: NOW })
       .where(eq(agents.id, ids.cto));
     const fetchQuotaWindows = vi.fn().mockResolvedValue(quota(99, 99));
     const pacing = subscriptionPacingService(db, { fetchQuotaWindows, now: () => NOW });
-    await pacing.updatePolicy(
-      companyId,
-      { autoPause: false, sessionPauseAtPercent: 90, weeklyPauseAtPercent: 95, agentWeeklyLimitPercent: {}, exemptAgentIds: [] },
-      "user-1",
-    );
+    await pacing.updatePolicy(companyId, claudePolicy(OFF), "user-1");
 
     await pacing.sweep();
 
@@ -198,17 +216,11 @@ describeEmbeddedPostgres("subscription pacing service", () => {
   });
 
   it("pauses only the agent over its share of the week", async () => {
-    const { companyId, ids } = await seed({ autoPause: true });
+    const { companyId, ids } = await seed(claudePolicy(ON));
     const pacing = subscriptionPacingService(db, { fetchQuotaWindows: vi.fn().mockResolvedValue(quota(20, 60)), now: () => NOW });
     await pacing.updatePolicy(
       companyId,
-      {
-        autoPause: true,
-        sessionPauseAtPercent: 90,
-        weeklyPauseAtPercent: 95,
-        agentWeeklyLimitPercent: { [ids.cto]: 30, [ids.dev]: 30 },
-        exemptAgentIds: [],
-      },
+      claudePolicy(ON, { agentWeeklyLimitPercent: { [ids.cto]: 30, [ids.dev]: 30 } }),
       "user-1",
     );
     const event = {
@@ -236,6 +248,7 @@ describeEmbeddedPostgres("subscription pacing service", () => {
       .where(and(eq(activityLog.action, "agent.paused"), eq(activityLog.entityId, ids.cto)));
     expect(pause?.details).toEqual({
       reason: "subscription_pacing",
+      provider: "anthropic",
       rule: "agent_limit",
       observedPercent: 42,
       limitPercent: 30,
@@ -244,7 +257,7 @@ describeEmbeddedPostgres("subscription pacing service", () => {
   });
 
   it("changes nothing when Claude's plan usage is unavailable", async () => {
-    const { companyId, ids } = await seed({ autoPause: true });
+    const { companyId, ids } = await seed(claudePolicy(ON));
     const pacing = subscriptionPacingService(db, {
       fetchQuotaWindows: vi.fn().mockResolvedValue([
         { provider: "anthropic", ok: false, error: "anthropic usage api returned 401", windows: [] },
@@ -257,10 +270,56 @@ describeEmbeddedPostgres("subscription pacing service", () => {
     expect(await agentState(ids.cto)).toEqual({ status: "idle", pauseReason: null });
     expect((await pacing.status(companyId)).lastSweep).toEqual({
       at: NOW.toISOString(),
-      ok: false,
-      error: "anthropic usage api returned 401",
       paused: 0,
       resumed: 0,
+      errors: { anthropic: "anthropic usage api returned 401" },
+    });
+  });
+
+  it("paces each plan against its own usage and never pauses agents on a plan without usage data", async () => {
+    const { companyId, ids } = await seed({
+      plans: { anthropic: ON, openai: { ...ON, sessionPauseAtPercent: 50 }, google: ON },
+      agentWeeklyLimitPercent: {},
+      exemptAgentIds: [],
+    });
+    const codexId = randomUUID();
+    const geminiId = randomUUID();
+    const base = { companyId, role: "engineer", runtimeConfig: {}, permissions: {}, status: "idle" as const };
+    await db.insert(agents).values([
+      { ...base, id: codexId, name: "Codex dev", adapterType: "codex_local", adapterConfig: {} },
+      { ...base, id: geminiId, name: "Gemini dev", adapterType: "gemini_local", adapterConfig: {} },
+    ]);
+    const pacing = subscriptionPacingService(db, {
+      fetchQuotaWindows: vi.fn().mockResolvedValue([
+        ...quota(40, 60),
+        {
+          provider: "openai",
+          ok: true,
+          windows: [
+            { label: "5h limit", usedPercent: 55, resetsAt: SESSION_RESET, valueLabel: null },
+            { label: "Weekly limit", usedPercent: 30, resetsAt: WEEK_RESET, valueLabel: null },
+          ],
+        },
+      ]),
+      now: () => NOW,
+    });
+
+    await pacing.evaluateCompany(companyId);
+
+    expect(await agentState(codexId)).toEqual({ status: "paused", pauseReason: "subscription_pacing" });
+    expect(await agentState(ids.cto)).toEqual({ status: "idle", pauseReason: null });
+    expect(await agentState(geminiId)).toEqual({ status: "idle", pauseReason: null });
+    const status = await pacing.status(companyId);
+    expect(status.lastSweep).toEqual({ at: NOW.toISOString(), paused: 1, resumed: 0, errors: {} });
+    expect(
+      Object.fromEntries(status.agents.map((agent) => [agent.agentName, agent.provider])),
+    ).toEqual({
+      CTO: "anthropic",
+      Developer: "anthropic",
+      QA: "anthropic",
+      "Manually paused": "anthropic",
+      "Codex dev": "openai",
+      "Gemini dev": "google",
     });
   });
 });

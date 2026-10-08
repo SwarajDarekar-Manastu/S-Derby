@@ -13,6 +13,7 @@ import type {
   ProviderQuotaResult,
   SubscriptionPacingPolicy,
   SubscriptionPacingStatus,
+  SubscriptionPlanProvider,
   SubscriptionUsage,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -50,8 +51,10 @@ export const costsApi = {
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
   quotaWindows: (companyId: string) =>
     api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
-  subscriptionUsage: (companyId: string, since: string) =>
-    api.get<SubscriptionUsage>(`/companies/${companyId}/costs/subscription?since=${encodeURIComponent(since)}`),
+  subscriptionUsage: (companyId: string, since: string, provider: SubscriptionPlanProvider) =>
+    api.get<SubscriptionUsage>(
+      `/companies/${companyId}/costs/subscription?since=${encodeURIComponent(since)}&provider=${provider}`,
+    ),
   subscriptionPacing: (companyId: string) =>
     api.get<SubscriptionPacingStatus>(`/companies/${companyId}/costs/subscription-pacing`),
   updateSubscriptionPacing: (companyId: string, policy: SubscriptionPacingPolicy) =>
