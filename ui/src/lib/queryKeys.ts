@@ -705,6 +705,8 @@ export const queryKeys = {
     ["subscription-usage", companyId, provider, since] as const,
   subscriptionPacing: (companyId: string) =>
     ["subscription-pacing", companyId] as const,
+  releaseShip: (companyId: string) =>
+    ["release-ship", companyId] as const,
   heartbeats: (companyId: string, agentId?: string) =>
     ["heartbeats", companyId, agentId] as const,
   runDetail: (runId: string) => ["heartbeat-run", runId] as const,

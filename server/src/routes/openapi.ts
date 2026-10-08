@@ -5282,6 +5282,24 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/release-ship",
+  tags: ["release"],
+  summary: "What the release branch would ship to main, per company repository",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/release-ship",
+  tags: ["release"],
+  summary: "Ship release to main: open or reuse the pull request and merge it with the Board's GitHub token",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(z.object({ repo: z.string() })) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
   method: "put",
   path: "/api/companies/{companyId}/costs/subscription-pacing",
   tags: ["costs"],

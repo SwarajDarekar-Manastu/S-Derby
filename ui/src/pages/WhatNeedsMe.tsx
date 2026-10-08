@@ -8,6 +8,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
+import { ShipReleaseCard } from "../components/ShipReleaseCard";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
@@ -531,6 +532,8 @@ export function WhatNeedsMe() {
           onSortOrderChange={updateSortOrder}
         />
       </div>
+
+      <ShipReleaseCard companyId={selectedCompanyId} />
 
       {/* Queue quicklinks + date-range chips (§4.1–§4.2). The rail self-hides
           when the company has no queues; the chips filter the desk server-side. */}
