@@ -88,6 +88,7 @@ import {
 } from "./services/index.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { subscriptionPacingService } from "./services/subscription-pacing.js";
+import { handoffWakeRepairService } from "./services/handoff-wake-repair.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
@@ -137,6 +138,7 @@ import type {
 } from "./routes/instance-database-backups.js";
 
 const SUBSCRIPTION_PACING_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const HANDOFF_WAKE_REPAIR_INTERVAL_MS = 60 * 1000;
 
 type BetterAuthSessionUser = {
   id: string;
@@ -1419,6 +1421,29 @@ async function startServerWithDatabaseTeardown(
         }));
     };
 
+    // A hand-off can wake the next assignee while the previous run is still
+    // exiting; that wake is skipped and never retried. Re-wake those once a minute.
+    const handoffWakeRepair = handoffWakeRepairService(db as any, heartbeat);
+    let handoffWakeRepairLastStartedAt = 0;
+    let handoffWakeRepairInFlight = false;
+    const scheduleHandoffWakeRepairSweep = () => {
+      if (heartbeatSchedulerStopped || handoffWakeRepairInFlight) return;
+      if (Date.now() - handoffWakeRepairLastStartedAt < HANDOFF_WAKE_REPAIR_INTERVAL_MS) return;
+      handoffWakeRepairLastStartedAt = Date.now();
+      handoffWakeRepairInFlight = true;
+      trackHeartbeatSchedulerWork(handoffWakeRepair
+        .sweep()
+        .then((result) => {
+          if (result.woken > 0) logger.info(result, "handoff wake repair re-woke stalled assignees");
+        })
+        .catch((err) => {
+          logger.error({ err }, "handoff wake repair sweep failed");
+        })
+        .finally(() => {
+          handoffWakeRepairInFlight = false;
+        }));
+    };
+
     const scheduleAdapterLoginReaperSweep = () => {
       if (heartbeatSchedulerStopped) return;
       trackHeartbeatSchedulerWork(adapterLoginReaper
@@ -1704,6 +1729,7 @@ async function startServerWithDatabaseTeardown(
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleSubscriptionPacingSweep();
+        scheduleHandoffWakeRepairSweep();
         scheduleEnvironmentLeaseCleanupSweep();
 
         if (heartbeatSchedulerStopped) return;
