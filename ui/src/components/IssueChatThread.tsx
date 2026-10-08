@@ -809,10 +809,13 @@ export function IssueAssigneePausedNotice({
         ? "It arrived paused from an organization import — imported agents stay parked until you resume them."
         : agent.pauseReason === "system"
           ? "It was paused by the system."
-          : "It was paused manually.";
-  // Budget pauses clear on their own when the budget resets; resuming by hand
-  // would fight the hard stop, so the action is only offered for the rest.
-  const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
+          : agent.pauseReason === "subscription_pacing"
+            ? "Subscription pacing paused it to keep the Claude plan from running out. It resumes when the plan window resets; to keep it running, mark it Never pause under Costs, Subscription."
+            : "It was paused manually.";
+  // Budget and pacing pauses clear on their own when their window resets;
+  // resuming by hand would fight them, so the action is only offered for the rest.
+  const canResume =
+    Boolean(onResume) && agent.pauseReason !== "budget" && agent.pauseReason !== "subscription_pacing";
 
   return (
     <div data-testid="issue-assignee-paused-notice" className="mb-3">

@@ -5,6 +5,7 @@ import {
   createFinanceEventSchema,
   normalizeIssueIdentifier,
   resolveBudgetIncidentSchema,
+  subscriptionPacingPolicySchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
 } from "@paperclipai/shared";
@@ -22,6 +23,7 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
+import { subscriptionPacingService } from "../services/subscription-pacing.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -281,6 +283,36 @@ export function costRoutes(
       return;
     }
     res.json(await costs.subscriptionUsage(companyId, since));
+  });
+
+  router.get("/companies/:companyId/costs/subscription-pacing", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    res.json(await subscriptionPacingService(db).status(companyId));
+  });
+
+  router.put(
+    "/companies/:companyId/costs/subscription-pacing",
+    validate(subscriptionPacingPolicySchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const pacing = subscriptionPacingService(db);
+      await pacing.updatePolicy(companyId, req.body, req.actor.userId ?? null);
+      await pacing.evaluateCompany(companyId);
+      res.json(await pacing.status(companyId));
+    },
+  );
+
+  router.post("/companies/:companyId/costs/subscription-pacing/evaluate", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const pacing = subscriptionPacingService(db);
+    await pacing.evaluateCompany(companyId);
+    res.json(await pacing.status(companyId));
   });
 
   router.get("/companies/:companyId/costs/quota-windows", async (req, res) => {

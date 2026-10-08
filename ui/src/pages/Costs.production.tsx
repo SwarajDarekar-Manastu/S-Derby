@@ -26,6 +26,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { SubscriptionUsagePanel } from "../components/SubscriptionUsagePanel";
+import { SubscriptionPacingCard } from "../components/SubscriptionPacingCard";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
@@ -153,7 +154,7 @@ export function Costs() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
+  const [mainTab, setMainTab] = useState<"overview" | "subscription" | "budgets" | "providers" | "billers" | "finance">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
 
@@ -623,6 +624,7 @@ export function Costs() {
       <Tabs value={mainTab} onValueChange={(value) => setMainTab(value as typeof mainTab)}>
         <TabsList variant="line" className="justify-start">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="subscription">Subscription</TabsTrigger>
           <TabsTrigger value="budgets">Budgets</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="billers">Billers</TabsTrigger>
@@ -834,6 +836,11 @@ export function Costs() {
               </div>
             </>
           )}
+        </TabsContent>
+
+        <TabsContent value="subscription" className="mt-4 space-y-4">
+          <SubscriptionUsagePanel companyId={companyId} />
+          <SubscriptionPacingCard companyId={companyId} />
         </TabsContent>
 
         <TabsContent value="budgets" className="mt-4 space-y-4">

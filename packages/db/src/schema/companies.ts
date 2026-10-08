@@ -1,4 +1,4 @@
-import type { InteractionResolverGovernance } from "@paperclipai/shared";
+import type { InteractionResolverGovernance, SubscriptionPacingPolicy } from "@paperclipai/shared";
 import { pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
@@ -20,6 +20,10 @@ export const companies = pgTable(
       .default(false),
     interactionResolverGovernance: jsonb("interaction_resolver_governance")
       .$type<InteractionResolverGovernance>()
+      .notNull()
+      .default({}),
+    subscriptionPacing: jsonb("subscription_pacing")
+      .$type<Partial<SubscriptionPacingPolicy>>()
       .notNull()
       .default({}),
     feedbackDataSharingEnabled: boolean("feedback_data_sharing_enabled")

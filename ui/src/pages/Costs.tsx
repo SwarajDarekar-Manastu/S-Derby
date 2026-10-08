@@ -26,6 +26,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { SubscriptionUsagePanel } from "../components/SubscriptionUsagePanel";
+import { SubscriptionPacingCard } from "../components/SubscriptionPacingCard";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
@@ -36,7 +37,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
-export type CostsMainTab = "overview" | "budgets" | "providers" | "billers" | "finance";
+export type CostsMainTab = "overview" | "subscription" | "budgets" | "providers" | "billers" | "finance";
 
 export interface CostsProps {
   /** Render inside Audit without a second page-level title or breadcrumb. */
@@ -650,6 +651,7 @@ export function Costs({
         {!lockTab ? (
           <TabsList variant="line" className="justify-start">
             <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="subscription">Subscription</TabsTrigger>
             {!hideBudgetsTab ? <TabsTrigger value="budgets">Budgets</TabsTrigger> : null}
             <TabsTrigger value="providers">Providers</TabsTrigger>
             <TabsTrigger value="billers">Billers</TabsTrigger>
@@ -862,6 +864,11 @@ export function Costs({
               </div>
             </>
           )}
+        </TabsContent>
+
+        <TabsContent value="subscription" className="mt-4 space-y-4">
+          <SubscriptionUsagePanel companyId={companyId} />
+          <SubscriptionPacingCard companyId={companyId} />
         </TabsContent>
 
         <TabsContent value="budgets" className="mt-4 space-y-4">

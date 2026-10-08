@@ -122,6 +122,7 @@ import {
   createFinanceEventSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
+  subscriptionPacingPolicySchema,
   resolveBudgetIncidentSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
@@ -5242,6 +5243,7 @@ const costSummaryPaths = [
   "window-spend",
   "quota-windows",
   "subscription",
+  "subscription-pacing",
 ] as const;
 
 for (const segment of costSummaryPaths) {
@@ -5277,6 +5279,27 @@ registry.registerPath({
     body: jsonBody(createFinanceEventSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/costs/subscription-pacing",
+  tags: ["costs"],
+  summary: "Save the subscription pacing policy and evaluate it now",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(subscriptionPacingPolicySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/costs/subscription-pacing/evaluate",
+  tags: ["costs"],
+  summary: "Evaluate subscription pacing now",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({

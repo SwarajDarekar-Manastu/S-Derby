@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "subscription_pacing" jsonb DEFAULT '{}'::jsonb NOT NULL;

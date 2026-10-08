@@ -87,6 +87,7 @@ import {
   workspaceOperationService,
 } from "./services/index.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
+import { subscriptionPacingService } from "./services/subscription-pacing.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
@@ -134,6 +135,8 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+
+const SUBSCRIPTION_PACING_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 type BetterAuthSessionUser = {
   id: string;
@@ -1395,6 +1398,27 @@ async function startServerWithDatabaseTeardown(
         logger.info(result, "adapter login reaper swept login sessions");
       }
     };
+    // Subscription pacing pauses and resumes agents that run on the Claude
+    // subscription. It reads Claude's live plan windows, so it runs every five
+    // minutes instead of on every scheduler tick, and never overlaps itself.
+    const subscriptionPacing = subscriptionPacingService(db as any);
+    let subscriptionPacingLastStartedAt = 0;
+    let subscriptionPacingInFlight = false;
+    const scheduleSubscriptionPacingSweep = () => {
+      if (heartbeatSchedulerStopped || subscriptionPacingInFlight) return;
+      if (Date.now() - subscriptionPacingLastStartedAt < SUBSCRIPTION_PACING_SWEEP_INTERVAL_MS) return;
+      subscriptionPacingLastStartedAt = Date.now();
+      subscriptionPacingInFlight = true;
+      trackHeartbeatSchedulerWork(subscriptionPacing
+        .sweep()
+        .catch((err) => {
+          logger.error({ err }, "subscription pacing sweep failed");
+        })
+        .finally(() => {
+          subscriptionPacingInFlight = false;
+        }));
+    };
+
     const scheduleAdapterLoginReaperSweep = () => {
       if (heartbeatSchedulerStopped) return;
       trackHeartbeatSchedulerWork(adapterLoginReaper
@@ -1679,6 +1703,7 @@ async function startServerWithDatabaseTeardown(
         scheduleTerminalWorkspaceSweep();
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
+        scheduleSubscriptionPacingSweep();
         scheduleEnvironmentLeaseCleanupSweep();
 
         if (heartbeatSchedulerStopped) return;
