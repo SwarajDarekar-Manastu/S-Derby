@@ -129,7 +129,17 @@ async function main() {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  await client.login(cfg.discordToken);
+  try {
+    await client.login(cfg.discordToken);
+  } catch (error) {
+    const message = (error as Error).message;
+    if (/disallowed intents/i.test(message)) {
+      console.error("config error: turn on Message Content Intent (Developer Portal > Bot > Privileged Gateway Intents) and save");
+    } else if (/invalid token/i.test(message)) {
+      console.error("config error: DISCORD_TOKEN was rejected by Discord; reset it in the Developer Portal");
+    } else throw error;
+    process.exit(2);
+  }
 
   function every(ms: number, name: string, fn: () => Promise<void>) {
     let busy = false;
