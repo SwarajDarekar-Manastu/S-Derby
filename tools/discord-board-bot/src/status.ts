@@ -58,12 +58,22 @@ export async function refreshStatus(ctx: Ctx): Promise<void> {
     }
   }
   if (!ctx.state.statusMessageId) {
-    const message = await channel.send(payload);
-    await message.pin().catch(async (error) => {
-      if (isDiscordCode(error, 50013)) await ctx.notice("⚠️ Missing permission Pin Messages in #status; the status board is posted but not pinned.");
-      else throw error;
-    });
-    ctx.state.statusMessageId = message.id;
+    ctx.state.statusMessageId = (await channel.send(payload)).id;
+    ctx.state.statusPinned = false;
+  }
+  // Pin until it works: the permission may be granted after the board was first posted.
+  if (!ctx.state.statusPinned) {
+    try {
+      await channel.messages.pin(ctx.state.statusMessageId);
+      ctx.state.statusPinned = true;
+    } catch (error) {
+      if (!isDiscordCode(error, 50013)) throw error;
+      const key = "pin-permission";
+      if (!ctx.state.warned.includes(key)) {
+        ctx.state.warned.push(key);
+        await ctx.notice("⚠️ Missing permission Pin Messages in #status; the status board is posted but not pinned.");
+      }
+    }
   }
   await sendWarnings(ctx, input);
 }
@@ -93,5 +103,5 @@ export async function rebuildStatus(ctx: Ctx): Promise<void> {
   if (ctx.state.statusMessageId) return;
   const pinned = await (await ctx.channel("status")).messages.fetchPins().catch(() => null);
   const mine = pinned?.items.find((pin) => pin.message.author.id === ctx.client.user?.id);
-  if (mine) ctx.state.statusMessageId = mine.message.id;
+  if (mine) Object.assign(ctx.state, { statusMessageId: mine.message.id, statusPinned: true });
 }

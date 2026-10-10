@@ -2,6 +2,7 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
 export interface State {
   statusMessageId?: string;
+  statusPinned?: boolean;
   aliveMessageId?: string;
   /** attention item id -> the Discord message that shows it */
   inbox: Record<string, { messageId: string; resolved?: boolean; resolvedAt?: number }>;
