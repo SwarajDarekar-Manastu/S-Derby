@@ -198,3 +198,15 @@ test("bug 10: /agent raise with only a new concurrency does not invent a daily c
   assert.match(content, /Runs per day: none → \*\*none\*\*/);
   assert.match(customId, /^ag:raise:a1:2:-:\d+$/);
 });
+
+test("bug 11: a cursor comment that Paperclip returns again is not reposted", async () => {
+  const now = new Date().toISOString();
+  const all: Comment[] = [{ id: "c1", body: "Reply", createdAt: now, authorAgentId: "a-cto" }];
+  const { ctx, posted, state } = relayCtx({ issueUpdatedAt: now, comments: () => all });
+  // Paperclip before c-fix returns the anchor itself after a cursor (millisecond rounding).
+  (ctx.pc as unknown as { comments: unknown }).comments = async () => all;
+  state.relayCursor = new Date(Date.now() - 60_000).toISOString();
+  await pollRelay(ctx);
+  await pollRelay(ctx);
+  assert.deepEqual(posted, ["CTO:Reply"]);
+});

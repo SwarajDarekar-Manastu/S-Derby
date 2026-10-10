@@ -97,10 +97,14 @@ async function relayIssue(ctx: Ctx, issue: Issue) {
 async function newComments(ctx: Ctx, issueId: string, after: string | undefined): Promise<Comment[]> {
   if (!after) return ctx.pc.comments(issueId);
   const page = await ctx.pc.comments(issueId, after);
+  // Paperclip before d2ccfa09a also returns the cursor itself (millisecond rounding):
+  // keep only what comes after it.
+  const at = page.findIndex((c) => c.id === after);
+  if (at >= 0) return page.slice(at + 1);
   if (page.length) return page;
   const recent = (await ctx.pc.lastComments(issueId, 20)).reverse();
-  const at = recent.findIndex((c) => c.id === after);
-  return at >= 0 ? recent.slice(at + 1) : [];
+  const index = recent.findIndex((c) => c.id === after);
+  return index >= 0 ? recent.slice(index + 1) : [];
 }
 
 /** Agent text goes through the channel webhook under the agent's name; notices come from the bot. */

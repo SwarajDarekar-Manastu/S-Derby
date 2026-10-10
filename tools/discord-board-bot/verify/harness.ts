@@ -346,7 +346,15 @@ const commands: Record<string, () => Promise<void>> = {
   "agent-post": async () => {
     const api = process.env.PAPERCLIP_API_URL ?? "";
     if (!api.includes(`:${PORT}`)) die(`refusing: PAPERCLIP_API_URL ${api} is not the isolated instance`);
-    const res = await fetch(`${api}/api${process.env.VERIFY_PATH}`, {
+    const target = `${api}/api${process.env.VERIFY_PATH}`;
+    const auth = { authorization: `Bearer ${process.env.VERIFY_AGENT_KEY}`, "x-paperclip-run-id": process.env.PAPERCLIP_RUN_ID ?? "" };
+    if (process.env.VERIFY_PATH?.endsWith("/comments")) {
+      // A second wake of the same agent must not post the seeded comment twice.
+      const body = (JSON.parse(process.env.VERIFY_BODY ?? "{}") as { body?: string }).body;
+      const existing = await fetch(target, { headers: auth }).then((r) => r.json()) as { body: string }[];
+      if (existing.some((c) => c.body === body)) return console.log("already posted");
+    }
+    const res = await fetch(target, {
       method: "POST",
       headers: { authorization: `Bearer ${process.env.VERIFY_AGENT_KEY}`, "x-paperclip-run-id": process.env.PAPERCLIP_RUN_ID ?? "",
         "content-type": "application/json" },
