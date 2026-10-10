@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "./heartbeat.js";
-import { hasLiveLegacyController, legacyControllerBootId, legacyControllerClaim,
+import { hasLiveLegacyController, LegacyControllerLeaseLostError, leaseLapsedButAdapterFinished, legacyControllerBootId, legacyControllerClaim,
   renewLegacyControllerLease, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -111,10 +111,30 @@ const support = await getEmbeddedPostgresTestSupport();
       await vi.advanceTimersByTimeAsync(101);
       await checked;
       expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason).toBeInstanceOf(LegacyControllerLeaseLostError);
     } finally { watch.stop(); vi.useRealTimers(); }
   });
 
   it("leaves native controller ownership to the native coordinator", () => {
     expect(legacyControllerClaim("native")).toEqual({});
+  });
+});
+
+describe("a lapsed lease does not relabel a cleanly finished run", () => {
+  const lapsed = new LegacyControllerLeaseLostError();
+  it("keeps the adapter's own result when the CLI exited cleanly", () => {
+    expect(leaseLapsedButAdapterFinished(lapsed, { exitCode: 0, errorMessage: null, signal: null, timedOut: false })).toBe(true);
+  });
+  it.each([
+    ["a failed exit", { exitCode: 1 }],
+    ["an error message", { exitCode: 0, errorMessage: "boom" }],
+    ["a kill signal", { exitCode: null, signal: "SIGTERM" }],
+    ["a timeout", { exitCode: 0, timedOut: true }],
+  ])("still treats %s after a lapse as aborted", (_label, result) => {
+    expect(leaseLapsedButAdapterFinished(lapsed, result)).toBe(false);
+  });
+  it("still treats any other abort reason as a cancellation", () => {
+    expect(leaseLapsedButAdapterFinished(new Error("Cancelled by control plane"), { exitCode: 0 })).toBe(false);
+    expect(leaseLapsedButAdapterFinished(undefined, { exitCode: 0 })).toBe(false);
   });
 });

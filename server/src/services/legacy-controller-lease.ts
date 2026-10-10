@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
 
 // A boot UUID has meaning across containers; a numeric PID does not.
 export const legacyControllerBootId = randomUUID();
@@ -8,6 +9,24 @@ export const LEGACY_CONTROLLER_LEASE_MS = 60_000;
 export const LEGACY_CONTROLLER_RENEW_MS = 10_000;
 
 type Run = typeof heartbeatRuns.$inferSelect;
+
+export class LegacyControllerLeaseLostError extends Error {
+  constructor() {
+    super("Legacy controller lease lost");
+    this.name = "LegacyControllerLeaseLostError";
+  }
+}
+
+/** The lease abort only flags the run: the local CLI keeps running. When the
+ * flag came from a lapsed lease and the CLI then exited cleanly, its own result
+ * decides the outcome, so a host stall cannot relabel finished work as cancelled. */
+export function leaseLapsedButAdapterFinished(
+  abortReason: unknown,
+  result: { exitCode?: number | null; errorMessage?: string | null; signal?: string | null; timedOut?: boolean },
+): boolean {
+  return abortReason instanceof LegacyControllerLeaseLostError &&
+    (result.exitCode ?? 0) === 0 && !result.errorMessage && !result.signal && !result.timedOut;
+}
 
 /** Commit these fields in the same UPDATE that claims a queued run. */
 export function legacyControllerClaim(runtimeMode: string) {
@@ -70,7 +89,11 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
   }
   let stopped = false;
   let pending = false;
-  const lost = () => { if (!stopped) controller.abort(new Error("Legacy controller lease lost")); };
+  const lost = () => {
+    if (stopped || controller.signal.aborted) return;
+    logger.warn({ runId: run.id }, "legacy controller lease lost; flagging the run as aborted");
+    controller.abort(new LegacyControllerLeaseLostError());
+  };
   let deadline = setTimeout(lost, Math.max(0,
     (run.controllerLeaseExpiresAt?.getTime() ?? 0) - Date.now()));
   deadline.unref();
