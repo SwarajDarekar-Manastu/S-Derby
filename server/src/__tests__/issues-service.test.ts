@@ -2654,6 +2654,33 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments.map((comment) => comment.id)).toEqual([latestCommentId]);
   });
 
+  it("excludes the anchor itself when its timestamp has microseconds", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorCommentId = randomUUID();
+    const latestCommentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Microsecond comments", status: "todo", priority: "medium" });
+    await db.insert(issueComments).values([
+      { id: anchorCommentId, companyId, issueId, body: "Anchor comment" },
+      { id: latestCommentId, companyId, issueId, body: "Latest comment" },
+    ]);
+    // Postgres keeps microseconds; a JavaScript Date keeps milliseconds.
+    await db.execute(sql`update issue_comments set created_at = '2026-03-26T11:00:00.000500Z' where id = ${anchorCommentId}`);
+    await db.execute(sql`update issue_comments set created_at = '2026-03-26T11:00:00.900000Z' where id = ${latestCommentId}`);
+
+    const later = await svc.listComments(issueId, { afterCommentId: anchorCommentId, order: "asc", limit: 50 });
+    const earlier = await svc.listComments(issueId, { afterCommentId: latestCommentId, order: "desc", limit: 50 });
+
+    expect(later.map((comment) => comment.id)).toEqual([latestCommentId]);
+    expect(earlier.map((comment) => comment.id)).toEqual([anchorCommentId]);
+  });
+
   it("returns no comments for an anchor cursor that is not a UUID", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

@@ -11952,10 +11952,9 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
-        const anchorCreatedAt =
-          anchor.createdAt instanceof Date
-            ? anchor.createdAt
-            : new Date(String(anchor.createdAt));
+        // Compare in SQL: Postgres keeps microseconds, a JavaScript Date only
+        // milliseconds, so a round-tripped timestamp would include the anchor.
+        const anchorCreatedAt = sql`(select ${issueComments.createdAt} from ${issueComments} where ${issueComments.id} = ${anchor.id})`;
         conditions.push(
           order === "asc"
             ? or(
