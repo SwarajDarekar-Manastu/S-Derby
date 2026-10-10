@@ -1,0 +1,19 @@
+{
+  "name": "sderby-discord-board-bot",
+  "private": true,
+  "type": "module",
+  "description": "Discord bot that lets the S-Derby Board run Paperclip from Discord",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test 'test/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "discord.js": "14.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
+  }
+}
