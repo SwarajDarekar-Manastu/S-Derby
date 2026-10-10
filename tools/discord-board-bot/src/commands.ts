@@ -130,11 +130,11 @@ export async function handleCommand(ctx: Ctx, interaction: AutocompleteInteracti
       }
       case "raise": {
         const c = interaction.options.getInteger("concurrent") ?? concurrency(agent);
-        const d = interaction.options.getInteger("daily") ?? dailyCap(agent) ?? 30;
+        const d = interaction.options.getInteger("daily") ?? dailyCap(agent); // null: keep "no cap"
         if (c === concurrency(agent) && d === dailyCap(agent)) return void (await reply("Nothing to change."));
         return void (await interaction.editReply({
-          content: `**${agent.name}**\nRuns at the same time: ${concurrency(agent)} → **${c}**\nRuns per day: ${dailyCap(agent) ?? "none"} → **${d}**\nMore concurrent runs use the subscription faster.`,
-          components: [{ type: 1, components: [{ type: 2, style: 1, label: "Apply", custom_id: `ag:raise:${agent.id}:${c}:${d}:${Date.now()}` }] }],
+          content: `**${agent.name}**\nRuns at the same time: ${concurrency(agent)} → **${c}**\nRuns per day: ${dailyCap(agent) ?? "none"} → **${d ?? "none"}**\nMore concurrent runs use the subscription faster.`,
+          components: [{ type: 1, components: [{ type: 2, style: 1, label: "Apply", custom_id: `ag:raise:${agent.id}:${c}:${d ?? "-"}:${Date.now()}` }] }],
         }));
       }
     }
@@ -157,12 +157,12 @@ export async function handleCommandComponent(ctx: Ctx, interaction: ButtonIntera
     return void (await interaction.editReply({ content: `Paused **${agent.name}**.` }));
   }
   if (action === "raise") {
-    const [c, d] = rest.map(Number);
+    const [c, d] = [Number(rest[0]), rest[1] === "-" ? undefined : Number(rest[1])];
     const runtimeConfig = { ...(agent.runtimeConfig ?? {}) };
     // PATCH replaces runtimeConfig whole: keep every other key as it was.
-    runtimeConfig.heartbeat = { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>), maxConcurrentRuns: c, maxDailyRuns: d };
+    runtimeConfig.heartbeat = { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>), maxConcurrentRuns: c, ...(d === undefined ? {} : { maxDailyRuns: d }) };
     const updated = await ctx.pc.patchAgent(agentId, { runtimeConfig });
-    return void (await interaction.editReply({ content: `**${agent.name}** now runs ${concurrency(updated)} at a time, ${dailyCap(updated)} per day.` }));
+    return void (await interaction.editReply({ content: `**${agent.name}** now runs ${concurrency(updated)} at a time, ${dailyCap(updated) === null ? "with no daily cap" : `${dailyCap(updated)} per day`}.` }));
   }
 }
 

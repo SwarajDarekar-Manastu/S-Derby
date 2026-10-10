@@ -42,6 +42,7 @@ const { values: flags, positionals } = parseArgs({
     issue: { type: "string" }, body: { type: "string" }, "body-file": { type: "string" },
     options: { type: "string" }, input: { type: "boolean" }, approve: { type: "boolean" },
     without: { type: "string" }, limit: { type: "string" }, "count-by-item": { type: "boolean" },
+    guild: { type: "string" }, file: { type: "string" },
   },
 });
 
@@ -279,6 +280,37 @@ const commands: Record<string, () => Promise<void>> = {
     }
     print(messages.map((m) => ({ id: m.id, author: m.author.username, webhook: Boolean(m.webhook_id), pinned: m.pinned,
       content: m.content, embeds: m.embeds, components: m.components })));
+  },
+
+  // Fills in guild, Board user and channel IDs next to a token the user wrote; never prints the token.
+  "discord-setup": async () => {
+    const file = flags.file ?? process.env.BOT_TEST_ENV ?? path.join(process.env.HOME ?? "", ".config/sderby-discord-bot/test.env");
+    const guildName = flags.guild ?? "S-Derby Test";
+    const lines = existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+    const token = lines.find((l) => l.startsWith("DISCORD_TOKEN="))?.slice("DISCORD_TOKEN=".length);
+    if (!token) die(`${file} has no DISCORD_TOKEN line`);
+    const discord = async <T>(p: string): Promise<T> => {
+      const res = await fetch(`https://discord.com/api/v10${p}`, { headers: { authorization: `Bot ${token}` } });
+      if (!res.ok) die(`Discord ${res.status} on ${p}: ${(await res.text()).slice(0, 200)}`);
+      return (await res.json()) as T;
+    };
+    const me = await discord<{ id: string; username: string }>("/users/@me");
+    const invite = `https://discord.com/oauth2/authorize?client_id=${me.id}&scope=bot%20applications.commands&permissions=311922125888`;
+    const guild = (await discord<{ id: string; name: string }[]>("/users/@me/guilds")).find((g) => g.name === guildName);
+    if (!guild) die(`bot ${me.username} is not in a server named "${guildName}". Invite it: ${invite}`);
+    const owner = (await discord<{ owner_id: string }>(`/guilds/${guild.id}`)).owner_id;
+    const channels = await discord<{ id: string; name: string; type: number }[]>(`/guilds/${guild.id}/channels`);
+    const wanted = ["status", "board-inbox", "bot-status", "cto", "senior-dev", "validation", "release"];
+    const map = Object.fromEntries(wanted.flatMap((n) => {
+      const c = channels.find((x) => x.name === n && x.type === 0);
+      return c ? [[n, c.id]] : [];
+    }));
+    const missing = wanted.filter((n) => !map[n]);
+    const keep = lines.filter((l) => !/^(DISCORD_GUILD_ID|DISCORD_BOARD_USER_ID|DISCORD_CHANNELS)=/.test(l));
+    writeFileSync(file, [...keep, `DISCORD_GUILD_ID=${guild.id}`, `DISCORD_BOARD_USER_ID=${owner}`, `DISCORD_CHANNELS=${JSON.stringify(map)}`].join("\n") + "\n", { mode: 0o600 });
+    console.log(`bot ${me.username} in "${guild.name}"; Board user = server owner ${owner}`);
+    console.log(missing.length ? `MISSING text channels: ${missing.join(", ")}` : `all ${wanted.length} channels found`);
+    console.log(`invite link (if permissions change): ${invite}`);
   },
 
   // Runs the bot's status and inbox code against the isolated Paperclip with Discord replaced by a recorder.

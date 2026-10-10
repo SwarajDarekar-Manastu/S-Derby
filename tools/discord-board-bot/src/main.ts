@@ -80,12 +80,18 @@ async function main() {
       process.exit(2);
     }
     await new REST().setToken(cfg.discordToken).put(Routes.applicationGuildCommands(ready.user.id, cfg.guildId), { body: commandDefinitions() });
-    await rebuildStatus(ctx);
-    await rebuildInbox(ctx);
-    await rebuildThreads(ctx);
-    await ensureWebhooks(ctx);
-    ctx.save();
-    await ctx.notice(`Bot started · watching company \`${cfg.companyId.slice(0, 8)}\``);
+    // Startup recovery needs Paperclip; if it is down, run without it and let the loops catch up.
+    try {
+      await rebuildStatus(ctx);
+      await rebuildInbox(ctx);
+      await rebuildThreads(ctx);
+      await ensureWebhooks(ctx);
+      ctx.save();
+      await ctx.notice(`Bot started · watching company \`${cfg.companyId.slice(0, 8)}\``);
+    } catch (error) {
+      console.error("startup recovery", error);
+      await ctx.notice(`⚠️ Bot started, but startup recovery failed: ${(error as Error).message}`);
+    }
     every(15_000, "inbox", () => pollInbox(ctx));
     every(10_000, "relay", () => pollRelay(ctx));
     every(60_000, "status", () => refreshStatus(ctx));
@@ -118,6 +124,8 @@ async function main() {
     ctx.save();
     void client.destroy().finally(() => process.exit(0));
   };
+  // A stray Discord or Paperclip rejection is logged, never fatal: the loops retry on their own.
+  process.on("unhandledRejection", (error) => console.error("unhandled rejection", error));
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 

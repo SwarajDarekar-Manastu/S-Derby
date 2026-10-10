@@ -11,6 +11,8 @@ export interface State {
   ownComments: string[];
   /** warning keys already sent */
   warned: string[];
+  /** relay poll position, kept across restarts */
+  relayCursor?: string;
   /** webhook per agent channel */
   webhooks: Record<string, { id: string; token: string }>;
 }

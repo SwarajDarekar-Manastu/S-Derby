@@ -1,4 +1,4 @@
-import { AttachmentBuilder, ThreadAutoArchiveDuration, WebhookClient, type Message } from "discord.js";
+import { AttachmentBuilder, ThreadAutoArchiveDuration, type Message, type Webhook } from "discord.js";
 import { AGENT_CHANNELS, type ChannelName } from "./config.ts";
 import type { Ctx } from "./main.ts";
 import { isDiscordCode } from "./main.ts";
@@ -7,7 +7,9 @@ import { commentAuthorAgentId, redact, split, statusNotice, taskFromMessage, thr
 
 const WEBHOOK_NAME = "S-Derby relay";
 const FILE_THRESHOLD = 8000;
-let lastPoll = new Date(Date.now() - 60_000).toISOString();
+/** Issues with a Board comment request in flight: their new comment may not be in ownComments yet. */
+const commentsInFlight = new Set<string>();
+const webhookCache = new Map<string, Webhook>();
 
 function agentChannelOf(ctx: Ctx, channelId: string | null | undefined): ChannelName | undefined {
   return (Object.keys(AGENT_CHANNELS) as ChannelName[]).find((name) => ctx.cfg.channels[name] === channelId);
@@ -15,7 +17,7 @@ function agentChannelOf(ctx: Ctx, channelId: string | null | undefined): Channel
 
 /** A Board message in an agent channel starts a task; a reply in its thread becomes a comment. */
 export async function handleRelayMessage(ctx: Ctx, message: Message): Promise<void> {
-  if (message.author.bot || message.webhookId) return; // never relay our own output
+  if (message.system || message.author.bot || message.webhookId) return; // never relay our own output or Discord notices
   const inThread = message.channel.isThread();
   const channelName = agentChannelOf(ctx, inThread ? message.channel.parentId : message.channelId);
   if (!channelName) return;
@@ -28,9 +30,14 @@ export async function handleRelayMessage(ctx: Ctx, message: Message): Promise<vo
       const issueId = Object.entries(ctx.state.threads).find(([, t]) => t.threadId === message.channelId)?.[0];
       if (!issueId) return void message.reply({ content: "This thread is not linked to a Paperclip task.", allowedMentions: { parse: [] } });
       const before = ctx.state.threads[issueId].status;
-      const comment = await ctx.pc.comment(issueId, text);
-      ctx.state.ownComments.push(comment.id);
-      ctx.save();
+      commentsInFlight.add(issueId);
+      try {
+        const comment = await ctx.pc.comment(issueId, text);
+        ctx.state.ownComments.push(comment.id);
+        ctx.save();
+      } finally {
+        commentsInFlight.delete(issueId);
+      }
       await message.react("✅");
       if (before === "done") await message.channel.send({ content: "↩️ Task reopened and the agent was woken.", allowedMentions: { parse: [] } });
       return;
@@ -56,11 +63,13 @@ export async function handleRelayMessage(ctx: Ctx, message: Message): Promise<vo
 export async function pollRelay(ctx: Ctx): Promise<void> {
   const tracked = ctx.state.threads;
   if (!Object.keys(tracked).length) return;
-  const since = new Date(Date.parse(lastPoll) - 30_000).toISOString(); // overlap: cursors prevent duplicates
+  // The cursor is saved, so issues that changed while the bot was down are caught up after a restart.
+  const cursor = ctx.state.relayCursor ?? new Date(Date.now() - 60_000).toISOString();
+  const since = new Date(Date.parse(cursor) - 30_000).toISOString(); // overlap: comment cursors prevent duplicates
   const pollStarted = new Date().toISOString();
-  const changed = (await ctx.pc.issues({ updatedSince: since, limit: 500 })).filter((i) => tracked[i.id]);
+  const changed = (await ctx.pc.issues({ updatedSince: since, limit: 500 })).filter((i) => tracked[i.id] && !commentsInFlight.has(i.id));
   for (const issue of changed) await relayIssue(ctx, issue);
-  lastPoll = pollStarted;
+  if (!changed.some((i) => commentsInFlight.has(i.id))) ctx.state.relayCursor = pollStarted;
 }
 
 async function relayIssue(ctx: Ctx, issue: Issue) {
@@ -68,10 +77,12 @@ async function relayIssue(ctx: Ctx, issue: Issue) {
   const names = new Map((await ctx.agents()).map((a) => [a.id, a.name]));
   const comments = await newComments(ctx, issue.id, link.lastCommentId);
   for (const comment of comments) {
-    link.lastCommentId = comment.id;
-    if (ctx.state.ownComments.includes(comment.id)) continue;
-    const agentId = commentAuthorAgentId(comment);
-    await post(ctx, link, agentId ? names.get(agentId) ?? "Agent" : "Board (web)", comment.body);
+    if (!ctx.state.ownComments.includes(comment.id)) {
+      const agentId = commentAuthorAgentId(comment);
+      await post(ctx, link, agentId ? names.get(agentId) ?? "Agent" : "Board (web)", comment.body);
+    }
+    link.lastCommentId = comment.id; // only after delivery: a failed post is retried next poll
+    ctx.save();
   }
   const assignee = issue.assigneeAgentId ? names.get(issue.assigneeAgentId) ?? "an agent" : null;
   const previousAssignee = link.assigneeAgentId ? names.get(link.assigneeAgentId) ?? "an agent" : null;
@@ -105,20 +116,23 @@ async function post(ctx: Ctx, link: Ctx["state"]["threads"][string], author: str
     const payload = { content, username: author.slice(0, 80), threadId: link.threadId, allowedMentions: { parse: [] as never[] },
       files: n === shown.length - 1 ? files : [] };
     try {
-      await webhook(ctx, link.channel as ChannelName).send(payload);
+      await (await webhook(ctx, link.channel as ChannelName)).send(payload);
     } catch (error) {
       if (!isDiscordCode(error, 10015)) throw error;
       delete ctx.state.webhooks[link.channel]; // webhook deleted by hand: recreate once and retry
       await ensureWebhooks(ctx);
-      await webhook(ctx, link.channel as ChannelName).send(payload);
+      await (await webhook(ctx, link.channel as ChannelName)).send(payload);
     }
   }
 }
 
-function webhook(ctx: Ctx, channel: ChannelName): WebhookClient {
+async function webhook(ctx: Ctx, channel: ChannelName): Promise<Webhook> {
   const w = ctx.state.webhooks[channel];
-  if (!w) throw new Error(`no webhook for #${channel}`);
-  return new WebhookClient({ id: w.id, token: w.token }, { allowedMentions: { parse: [] } });
+  if (!w) throw new Error(`no webhook for #${channel}; check the Manage Webhooks permission`);
+  const key = `${w.id}:${w.token}`;
+  const hook = webhookCache.get(key) ?? (await ctx.client.fetchWebhook(w.id, w.token));
+  webhookCache.set(key, hook);
+  return hook;
 }
 
 /** One webhook per agent channel, created with that agent's avatar (Paperclip serves it on localhost only). */

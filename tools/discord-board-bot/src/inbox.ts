@@ -1,7 +1,7 @@
 import type { ButtonInteraction, Message, ModalSubmitInteraction, StringSelectMenuInteraction } from "discord.js";
 import type { Ctx } from "./main.ts";
 import { forDiscord, isDiscordCode } from "./main.ts";
-import { PaperclipError, type AttentionItem } from "./paperclip.ts";
+import { PaperclipError, PaperclipUnavailable, type AttentionItem } from "./paperclip.ts";
 import { inboxMessage, resolvedMessage, type Embed, type Payload } from "./render.ts";
 
 const POSTS_PER_POLL = 10;
@@ -27,8 +27,14 @@ export async function pollInbox(ctx: Ctx): Promise<void> {
     return !record || (record.resolved && Date.now() - (record.resolvedAt ?? 0) > 120_000);
   });
   for (const item of fresh.slice(0, POSTS_PER_POLL)) {
-    const message = await channel.send(forDiscord(await renderItem(ctx, item)));
-    ctx.state.inbox[item.id] = { messageId: message.id };
+    // One item that cannot be fetched or rendered must not hold up the rest of the inbox.
+    try {
+      const message = await channel.send(forDiscord(await renderItem(ctx, item)));
+      ctx.state.inbox[item.id] = { messageId: message.id };
+    } catch (error) {
+      if (error instanceof PaperclipUnavailable) throw error;
+      console.error(`[inbox] could not post ${item.id}:`, error);
+    }
   }
   if (fresh.length > POSTS_PER_POLL) {
     await channel.send({ content: `…and ${fresh.length - POSTS_PER_POLL} more items. They will post over the next minutes.` });
@@ -36,7 +42,7 @@ export async function pollInbox(ctx: Ctx): Promise<void> {
   const live = new Set(items.map((i) => i.id));
   for (const [id, record] of Object.entries(ctx.state.inbox)) {
     if (record.resolved || live.has(id)) continue;
-    await markResolved(ctx, id, "Resolved in Paperclip");
+    await markResolved(ctx, id, "Resolved in Paperclip").catch((error) => console.error(`[inbox] could not resolve ${id}:`, error));
   }
 }
 
@@ -77,7 +83,9 @@ export async function rebuildInbox(ctx: Ctx): Promise<void> {
   for (const m of messages.values()) {
     if (m.author.id !== ctx.client.user?.id) continue;
     const itemId = m.embeds[0]?.footer?.text?.match(/item:(\S+)/)?.[1];
-    if (itemId) ctx.state.inbox[itemId] = { messageId: m.id, resolved: m.components.length === 0 };
+    // Resolved messages carry the ✓ title; items shown without buttons are still open.
+    const resolved = m.embeds[0]?.title?.startsWith("✓ ") ?? false;
+    if (itemId) ctx.state.inbox[itemId] = { messageId: m.id, ...(resolved ? { resolved, resolvedAt: Date.now() } : {}) };
   }
 }
 
@@ -98,7 +106,8 @@ export async function handleInboxInteraction(ctx: Ctx, interaction: InboxInterac
       components: [{ type: 1, components: [{ type: 4, custom_id: "note", label: "Note for the agent (optional)", style: 2, required: false, max_length: 2000 }] }] });
   }
   if (prefix === "dc" && interaction.isButton()) {
-    const decision = await ctx.pc.decision(parts[0]);
+    // A modal must be the first answer, so this read has to beat Discord's 3-second limit.
+    const decision = await withinDiscordDeadline(ctx.pc.decision(parts[0]));
     const option = decision.options[Number(parts[1])];
     if (decision.status !== "open" || !option) return staleReply(ctx, interaction, itemId, `Decision is already ${decision.status}.`);
     if (decision.inputs?.length) {
@@ -117,8 +126,12 @@ export async function handleInboxInteraction(ctx: Ctx, interaction: InboxInterac
     if (outcome === null) return; // partial answer recorded; card stays open
     if (itemId) await markResolved(ctx, itemId, outcome);
   } catch (error) {
-    if (error instanceof PaperclipError && [404, 409, 422].includes(error.status)) {
+    if (error instanceof PaperclipError && [404, 409].includes(error.status)) {
       return staleReply(ctx, interaction, itemId, `Already resolved or changed in Paperclip: ${error.reason}`);
+    }
+    if (error instanceof PaperclipError && error.status === 422) {
+      // Validation failed: the card is still open in Paperclip, so keep it open here.
+      return void (await interaction.followUp({ content: `Paperclip said: ${error.reason}`, flags: 64 }));
     }
     throw error;
   } finally {
@@ -174,6 +187,11 @@ async function act(ctx: Ctx, interaction: InboxInteraction, prefix: string, part
     default:
       throw new Error(`unknown button ${prefix}`);
   }
+}
+
+function withinDiscordDeadline<T>(request: Promise<T>): Promise<T> {
+  return Promise.race([request, new Promise<never>((_, reject) => setTimeout(
+    () => reject(new PaperclipUnavailable("Paperclip unavailable: no answer within 2 seconds. Try again.")), 2000).unref())]);
 }
 
 async function staleReply(ctx: Ctx, interaction: InboxInteraction, itemId: string | undefined, text: string) {

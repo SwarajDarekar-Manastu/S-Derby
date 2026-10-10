@@ -260,7 +260,8 @@ export function inboxMessage(item: AttentionItem, d: InboxDetail): Payload {
   const ping = PING_KINDS.has(item.sourceKind);
   return {
     content: ping ? `<@${d.boardUserId}> ${kind} needs you` : `${kind}`,
-    embeds: [{ title: `${kind}: ${title}`, description: cut(lines.join("\n\n"), 4000), color: severityColor(item.severity), fields,
+    // 254 leaves room for the "✓ " added when the item is resolved.
+    embeds: [{ title: cut(`${kind}: ${title}`, 254), description: cut(lines.join("\n\n"), 4000), color: severityColor(item.severity), fields,
       footer: { text: `desktop: ${item.relatedIssue?.identifier ?? item.subject.identifier ?? item.subject.kind} · item:${item.id}` } }],
     components,
     allowed_mentions: ping ? { parse: [], users: [d.boardUserId] } : { parse: [] },
@@ -278,7 +279,7 @@ export function resolvedMessage(previous: Payload, outcome: string): Payload {
   const embed = previous.embeds?.[0] ?? {};
   return {
     content: previous.content?.replace(/<@\d+> /, ""),
-    embeds: [{ ...embed, color: COLOR.muted, title: `✓ ${embed.title ?? ""}`, description: cut(`**${outcome}**\n\n${embed.description ?? ""}`, 4000) }],
+    embeds: [{ ...embed, color: COLOR.muted, title: cut(`✓ ${embed.title ?? ""}`, 256), description: cut(`**${outcome}**\n\n${embed.description ?? ""}`, 4000) }],
     components: [],
     allowed_mentions: { parse: [] },
   };
