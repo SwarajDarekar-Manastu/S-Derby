@@ -36,6 +36,11 @@ export function legacyExecutionNeedsReconciliation(
       && evidence.providerStopped === true && evidence.sessionPreserved === true
       && evidence.actionOutcomes === "settled"
       && (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state === "acknowledged") return false;
+  // A Board pause is an operator stop; resuming is the operator's decision to
+  // continue. Only an acknowledged stop qualifies, and budget pauses use a
+  // different code, so they stay held.
+  if (run.status === "cancelled" && run.errorCode === "agent_paused"
+      && (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state === "acknowledged") return false;
   // Waiting for a subscription or workspace precedes provider execution. It is
   // a resource wait, not a failed provider attempt or permission to replay work.
   if (run.status === "cancelled" && run.errorCode === "ai_connection_busy" &&

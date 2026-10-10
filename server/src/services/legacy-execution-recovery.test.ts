@@ -49,6 +49,16 @@ it.each([
   } })).toBe(true);
 });
 
+it("releases a Board pause only once the provider stop was acknowledged", () => {
+  const paused = {
+    runtimeMode: "legacy", status: "cancelled", errorCode: "agent_paused",
+    resultJson: { executionCancellation: { state: "acknowledged" } },
+  };
+  expect(legacyExecutionNeedsReconciliation(paused)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({ ...paused, resultJson: {} })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...paused, errorCode: "cancelled" })).toBe(true);
+});
+
 it("retains the hold until the provider actually acknowledges cancellation", () => {
   expect(legacyExecutionNeedsReconciliation({ ...stopped, resultJson: {
     ...stopped.resultJson, executionCancellation: { state: "requested" },

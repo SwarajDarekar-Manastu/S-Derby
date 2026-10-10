@@ -8232,6 +8232,36 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runningProcesses.has(runId)).toBe(false);
   });
 
+  it("leaves no execution hold after a Board pause stops an owned process", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      adapterType: "claude_local",
+    });
+    runningProcesses.set(runId, {
+      child: { pid: 81_601 } as ChildProcess,
+      graceSec: 1,
+      processGroupId: 81_602,
+    });
+    mockTerminateLocalService.mockResolvedValue(undefined);
+
+    await heartbeatService(db).cancelActiveForAgent(agentId);
+
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+  });
+
+  it("keeps the execution hold when a Board pause cannot confirm the process stopped", async () => {
+    const { companyId, agentId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      adapterType: "claude_local",
+      processPid: 81_701,
+      processGroupId: 81_702,
+    });
+
+    await heartbeatService(db).cancelActiveForAgent(agentId);
+
+    expect(await getExecutionBlocker(db, companyId, issueId)).not.toBeNull();
+  });
+
   it("records manual cancellation stop metadata", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",

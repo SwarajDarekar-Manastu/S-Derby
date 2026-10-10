@@ -29713,27 +29713,14 @@ export function heartbeatService(
                 parseObject(current?.resultJson),
               )
             : parseObject(run.resultJson);
-        await setRunStatus(run.id, "cancelled", {
-          finishedAt: new Date(),
-          error: reason,
-          errorCode,
-          ...(agent
-            ? {
-                resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-                  resultJson: persistedCancellationResult,
-                  errorCode,
-                  errorMessage: reason,
-                }),
-              }
-            : {}),
-        });
-
-        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-          finishedAt: new Date(),
-          error: reason,
-        });
-
+        // Stop the owned process before recording the cancellation so the
+        // record can say the provider stopped. Otherwise every agent pause
+        // leaves a reconciliation hold that resume cannot clear.
         const running = runningProcesses.get(run.id);
+        const ownsProcess = Boolean(running && (
+          (Number.isInteger(running.child.pid) && (running.child.pid ?? 0) > 0) ||
+          (Number.isInteger(running.processGroupId) && (running.processGroupId ?? 0) > 0)
+        ));
         if (running) {
           await terminateHeartbeatRunProcess({
             pid: running.child.pid,
@@ -29742,6 +29729,31 @@ export function heartbeatService(
           });
         }
         runningProcesses.delete(run.id);
+        const finishedAt = new Date();
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt,
+          error: reason,
+          errorCode,
+          ...(agent
+            ? {
+                resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+                  resultJson: ownsProcess
+                    ? {
+                        ...persistedCancellationResult,
+                        executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString() },
+                      }
+                    : persistedCancellationResult,
+                  errorCode,
+                  errorMessage: reason,
+                }),
+              }
+            : {}),
+        });
+
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt,
+          error: reason,
+        });
         await releaseIssueExecutionAndPromote(run);
       } finally {
         stopOwnership?.release();
