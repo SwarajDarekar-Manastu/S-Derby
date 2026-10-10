@@ -175,12 +175,17 @@ const commands: Record<string, () => Promise<void>> = {
         const decider = run.agents.Decider;
         await patch(`/agents/${decider.id}`, { adapterConfig: agentPostConfig(decider.key, `/companies/${run.companyId}/decisions`, spec) });
         // Decisions need an issue-scoped run: assigning a task to the Decider starts one.
-        await post(`/companies/${run.companyId}/issues`, { title: `Decision host ${tag}`, assigneeAgentId: decider.id, status: "todo" });
+        const host = await post<{ id: string }>(`/companies/${run.companyId}/issues`, { title: `Decision host ${tag}`, assigneeAgentId: decider.id, status: "todo" });
         for (let n = 0; n < 40; n++) {
           await sleep(1000);
           const open = await get<{ id: string; title: string }[]>(`/companies/${run.companyId}/decisions?status=open`);
           const found = open.find((d) => d.title === spec.title);
-          if (found) return print({ decisionId: found.id });
+          if (found) {
+            // Close the host task so later Decider wakes do not post the same decision again.
+            await patch(`/issues/${host.id}`, { status: "done" });
+            await patch(`/agents/${decider.id}`, { adapterConfig: { command: "true" } });
+            return print({ decisionId: found.id });
+          }
         }
         return die("decision was not created within 40 s; see the Decider agent's run log");
       }
@@ -295,7 +300,7 @@ const commands: Record<string, () => Promise<void>> = {
       return (await res.json()) as T;
     };
     const me = await discord<{ id: string; username: string }>("/users/@me");
-    const invite = `https://discord.com/oauth2/authorize?client_id=${me.id}&scope=bot%20applications.commands&permissions=311922125888`;
+    const invite = `https://discord.com/oauth2/authorize?client_id=${me.id}&scope=bot%20applications.commands&permissions=2252111735811136`;
     const guild = (await discord<{ id: string; name: string }[]>("/users/@me/guilds")).find((g) => g.name === guildName);
     if (!guild) die(`bot ${me.username} is not in a server named "${guildName}". Invite it: ${invite}`);
     const owner = (await discord<{ owner_id: string }>(`/guilds/${guild.id}`)).owner_id;

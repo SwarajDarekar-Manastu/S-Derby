@@ -29,7 +29,7 @@ All settings come from the environment, usually an env file loaded by systemd:
 | `PAPERCLIP_BOARD_KEY_NAME` | The key's name, for the expiry warning (default `discord-board-bot`) |
 | `BOT_STATE_FILE` | Where the bot keeps message and thread mappings (default `bot-state.json`) |
 
-The bot stops at startup with the name of any missing setting. The Discord app needs **Message Content Intent** on and these permissions in the server: View Channels, Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Embed Links, Attach Files, Manage Webhooks, Use Application Commands, Manage Messages (to pin the status board).
+The bot stops at startup with the name of any missing setting. The Discord app needs **Message Content Intent** on and these permissions in the server: View Channels, Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Embed Links, Attach Files, Manage Webhooks, Use Application Commands, Add Reactions, Pin Messages (to pin the status board).
 
 ## Running
 

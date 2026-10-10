@@ -59,7 +59,10 @@ export async function refreshStatus(ctx: Ctx): Promise<void> {
   }
   if (!ctx.state.statusMessageId) {
     const message = await channel.send(payload);
-    await message.pin().catch(() => undefined);
+    await message.pin().catch(async (error) => {
+      if (isDiscordCode(error, 50013)) await ctx.notice("⚠️ Missing permission Pin Messages in #status; the status board is posted but not pinned.");
+      else throw error;
+    });
     ctx.state.statusMessageId = message.id;
   }
   await sendWarnings(ctx, input);
@@ -88,7 +91,7 @@ async function sendWarnings(ctx: Ctx, input: StatusInput) {
 /** After a lost state file, find the pinned status message instead of posting a second one. */
 export async function rebuildStatus(ctx: Ctx): Promise<void> {
   if (ctx.state.statusMessageId) return;
-  const pinned = await (await ctx.channel("status")).messages.fetchPinned().catch(() => null);
-  const mine = pinned?.find((m) => m.author.id === ctx.client.user?.id);
-  if (mine) ctx.state.statusMessageId = mine.id;
+  const pinned = await (await ctx.channel("status")).messages.fetchPins().catch(() => null);
+  const mine = pinned?.items.find((pin) => pin.message.author.id === ctx.client.user?.id);
+  if (mine) ctx.state.statusMessageId = mine.message.id;
 }
