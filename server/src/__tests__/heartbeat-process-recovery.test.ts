@@ -8225,9 +8225,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await heartbeatService(db).cancelActiveForAgent(agentId);
 
+    // Same termination as a single-run cancel: Codex gets Ctrl-C to stop its tool sessions.
     expect(mockTerminateLocalService).toHaveBeenCalledWith(
       expect.objectContaining({ pid: 81_501, processGroupId: 81_502 }),
-      { forceAfterMs: 3000 },
+      { forceAfterMs: 3000, signal: "SIGINT" },
     );
     expect(runningProcesses.has(runId)).toBe(false);
   });

@@ -29695,7 +29695,10 @@ export function heartbeatService(
           ? captureAdapterStopOwnership(run.id)
           : undefined;
       try {
-        if (stopOwnership?.control) {
+        // A run whose process we own takes the same path as a single-run cancel:
+        // the executor waits for it, and the stop is recorded as acknowledged, so
+        // a Board pause does not leave a reconciliation hold that resume cannot clear.
+        if (stopOwnership?.control || (run.runtimeMode !== "native" && runningProcesses.has(run.id))) {
           await cancelRunInternal(run.id, reason, { errorCode });
           continue;
         }
@@ -29713,36 +29716,14 @@ export function heartbeatService(
                 parseObject(current?.resultJson),
               )
             : parseObject(run.resultJson);
-        // Stop the owned process before recording the cancellation so the
-        // record can say the provider stopped. Otherwise every agent pause
-        // leaves a reconciliation hold that resume cannot clear.
-        const running = runningProcesses.get(run.id);
-        const ownsProcess = Boolean(running && (
-          (Number.isInteger(running.child.pid) && (running.child.pid ?? 0) > 0) ||
-          (Number.isInteger(running.processGroupId) && (running.processGroupId ?? 0) > 0)
-        ));
-        if (running) {
-          await terminateHeartbeatRunProcess({
-            pid: running.child.pid,
-            processGroupId: running.processGroupId,
-            graceMs: Math.max(1, running.graceSec) * 1000,
-          });
-        }
-        runningProcesses.delete(run.id);
-        const finishedAt = new Date();
         await setRunStatus(run.id, "cancelled", {
-          finishedAt,
+          finishedAt: new Date(),
           error: reason,
           errorCode,
           ...(agent
             ? {
                 resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-                  resultJson: ownsProcess
-                    ? {
-                        ...persistedCancellationResult,
-                        executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString() },
-                      }
-                    : persistedCancellationResult,
+                  resultJson: persistedCancellationResult,
                   errorCode,
                   errorMessage: reason,
                 }),
@@ -29751,9 +29732,19 @@ export function heartbeatService(
         });
 
         await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-          finishedAt,
+          finishedAt: new Date(),
           error: reason,
         });
+
+        const running = runningProcesses.get(run.id);
+        if (running) {
+          await terminateHeartbeatRunProcess({
+            pid: running.child.pid,
+            processGroupId: running.processGroupId,
+            graceMs: Math.max(1, running.graceSec) * 1000,
+          });
+        }
+        runningProcesses.delete(run.id);
         await releaseIssueExecutionAndPromote(run);
       } finally {
         stopOwnership?.release();
