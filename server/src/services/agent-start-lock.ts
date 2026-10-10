@@ -46,3 +46,10 @@ export async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T
     }
   }
 }
+
+/** Company-wide cap on running agent runs, from PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS.
+ * Unset or not a positive integer means no cap: only each agent's own limit applies. */
+export function companyMaxConcurrentRuns(env: NodeJS.ProcessEnv = process.env): number | null {
+  const cap = Number(env.PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS);
+  return Number.isInteger(cap) && cap > 0 ? cap : null;
+}

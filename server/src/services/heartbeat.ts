@@ -560,7 +560,7 @@ import {
 } from "./recovery/review-path-recovery.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
-import { withAgentStartLock } from "./agent-start-lock.js";
+import { companyMaxConcurrentRuns, withAgentStartLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -20000,6 +20000,22 @@ export function heartbeatService(
     }
   }
 
+  // The company count and the claims below happen under one company-wide lock,
+  // so concurrent starts for different agents cannot overshoot the cap.
+  async function withCompanyRunSlots<T>(agentId: string, fn: (slots: number) => Promise<T>): Promise<T> {
+    const cap = companyMaxConcurrentRuns();
+    if (cap === null) return fn(Number.POSITIVE_INFINITY);
+    const [owner] = await db.select({ companyId: agents.companyId }).from(agents).where(eq(agents.id, agentId)).limit(1);
+    if (!owner) return fn(0);
+    return withAgentStartLock(`company:${owner.companyId}`, async () => {
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, owner.companyId), eq(heartbeatRuns.status, "running")));
+      return fn(Math.max(0, cap - Number(count ?? 0)));
+    });
+  }
+
   async function startNextQueuedRunForAgent(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
@@ -20007,7 +20023,7 @@ export function heartbeatService(
     // agent's next queued run, which takes this same lock.
     const rejectedClaims: Array<{ run: typeof heartbeatRuns.$inferSelect; err: HttpError }> = [];
 
-    return withAgentStartLock(agentId, async () => {
+    return withAgentStartLock(agentId, () => withCompanyRunSlots(agentId, async (companySlots) => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
       const invokability = await getAgentInvokability(agent);
@@ -20024,7 +20040,7 @@ export function heartbeatService(
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(
         0,
-        policy.maxConcurrentRuns - runningCount,
+        Math.min(policy.maxConcurrentRuns - runningCount, companySlots),
       );
       if (availableSlots <= 0) return [];
 
@@ -20155,7 +20171,7 @@ export function heartbeatService(
         });
       }
       return claimedRuns;
-    }).finally(() => cancelRejectedQueuedRuns(rejectedClaims));
+    })).finally(() => cancelRejectedQueuedRuns(rejectedClaims));
   }
 
   // Await every background heartbeat execution that is currently in flight. A

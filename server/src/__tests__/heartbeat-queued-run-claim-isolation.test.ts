@@ -242,4 +242,42 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(await runStatus(rejectedRunId)).toMatchObject({ status: "cancelled" });
     expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
   });
+
+  it("holds a company at PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS and starts the rest as slots free", async () => {
+    const first = await insertAgent();
+    const secondAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: secondAgentId,
+      companyId: first.companyId,
+      name: "Second Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 60, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    let release!: () => void;
+    mockAdapterExecute.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({ exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "held", provider: "test", model: "test-model" });
+    }));
+    const { runId: firstRunId } = await insertClaimableRun(first.companyId, first.agentId, new Date(Date.now() - 1_000));
+    const { runId: secondRunId } = await insertClaimableRun(first.companyId, secondAgentId);
+    process.env.PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS = "1";
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalledOnce());
+      expect(await runStatus(firstRunId)).toMatchObject({ status: "running" });
+      expect(await runStatus(secondRunId)).toMatchObject({ status: "queued" });
+
+      release();
+      await vi.waitFor(async () => expect(await runStatus(firstRunId)).toMatchObject({ status: "succeeded" }));
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(await runStatus(secondRunId)).toMatchObject({ status: "succeeded" });
+    } finally {
+      delete process.env.PAPERCLIP_COMPANY_MAX_CONCURRENT_RUNS;
+    }
+  });
 });
