@@ -1434,7 +1434,7 @@ async function startServerWithDatabaseTeardown(
       trackHeartbeatSchedulerWork(handoffWakeRepair
         .sweep()
         .then((result) => {
-          if (result.woken > 0) logger.info(result, "handoff wake repair re-woke stalled assignees");
+          if (result.woken > 0 || result.recovered > 0) logger.info(result, "handoff wake repair re-woke stalled assignees");
         })
         .catch((err) => {
           logger.error({ err }, "handoff wake repair sweep failed");
